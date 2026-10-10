@@ -31,6 +31,38 @@ final class ModelRequestFactory {
         this.codec = codec;
     }
 
+    /**
+     * Builds the contract instruction for the negotiated output contract.
+     *
+     * <p>{@code JSON_SCHEMA} and {@code FORCED_FUNCTION} hand the envelope
+     * schema to the provider, so the original wording is enough. {@code
+     * JSON_OBJECT} and {@code PLAIN_JSON} carry no provider-side schema at
+     * all: without the documented field set in the prompt the model can only
+     * guess, and every decision then fails local validation with
+     * {@code missing_fields}. Those contracts therefore inline the same
+     * schema the local validator enforces.</p>
+     */
+    private static String contractInstruction(
+            OutputContract outputContract,
+            JsonObject decisionSchema
+    ) {
+        if (outputContract == OutputContract.JSON_SCHEMA
+                || outputContract == OutputContract.FORCED_FUNCTION) {
+            return CONTRACT_INSTRUCTION;
+        }
+        return CONTRACT_INSTRUCTION + """
+
+                DECISION_JSON_SCHEMA
+                %s
+                END_DECISION_JSON_SCHEMA
+
+                The schema above is the only valid shape. Emit every field
+                listed in "required" using those exact spellings, and no
+                other field. Copy requestId, observedWorldRevision and
+                goalRevision verbatim from TRUSTED_REQUEST_CONTEXT.
+                """.formatted(GSON.toJson(decisionSchema));
+    }
+
     String build(ModelEndpoint endpoint, ProviderCapabilities capabilities, PlannerInput input) {
         return switch (capabilities.protocol()) {
             case RESPONSES -> buildResponses(endpoint, capabilities, input);
@@ -44,10 +76,15 @@ final class ModelRequestFactory {
             PlannerInput input
     ) {
         JsonObject root = new JsonObject();
+        JsonObject decisionSchema = codec.schema(input.decisionContext());
         root.addProperty("model", endpoint.modelName());
         root.addProperty("store", false);
         root.addProperty("stream", capabilities.streaming());
-        root.addProperty("instructions", input.systemPrompt() + CONTRACT_INSTRUCTION);
+        root.addProperty(
+                "instructions",
+                input.systemPrompt()
+                        + contractInstruction(capabilities.outputContract(), decisionSchema)
+        );
         root.addProperty("max_output_tokens", input.maxOutputTokens());
         root.addProperty("temperature", input.temperature());
         if (capabilities.reasoningControl() != ReasoningControl.DEFAULT) {
@@ -89,7 +126,7 @@ final class ModelRequestFactory {
         applyResponsesOutputContract(
                 root,
                 capabilities,
-                codec.schema(input.decisionContext())
+                decisionSchema
         );
         return GSON.toJson(root);
     }
@@ -116,10 +153,15 @@ final class ModelRequestFactory {
                 input.maxOutputTokens()
         );
 
+        JsonObject decisionSchema = codec.schema(input.decisionContext());
         JsonArray messages = new JsonArray();
         JsonObject system = new JsonObject();
         system.addProperty("role", "system");
-        system.addProperty("content", input.systemPrompt() + CONTRACT_INSTRUCTION);
+        system.addProperty(
+                "content",
+                input.systemPrompt()
+                        + contractInstruction(capabilities.outputContract(), decisionSchema)
+        );
         messages.add(system);
         JsonObject user = new JsonObject();
         user.addProperty("role", "user");
@@ -147,7 +189,7 @@ final class ModelRequestFactory {
         applyChatOutputContract(
                 root,
                 capabilities,
-                codec.schema(input.decisionContext())
+                decisionSchema
         );
         return GSON.toJson(root);
     }
