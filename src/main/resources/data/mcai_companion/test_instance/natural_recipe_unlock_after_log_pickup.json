@@ -1,0 +1,7 @@
+{
+  "type": "minecraft:function",
+  "environment": "minecraft:default",
+  "function": "mcai_companion:natural_recipe_unlock_after_log_pickup",
+  "max_ticks": 100,
+  "structure": "forge:empty3x3x3"
+}

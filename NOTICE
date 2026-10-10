@@ -1,0 +1,10 @@
+Minecraft AI Companion
+Copyright (c) 2026 the project contributors
+
+Project source and original assets are licensed under Apache-2.0; see LICENSE.
+
+The build/runtime uses third-party software under its own terms, including
+Minecraft Forge (LGPL-2.1-only), Xerial SQLite JDBC (Apache-2.0), Gson
+(Apache-2.0), Minecraft/Mojang libraries, and optional compile-only Xaero
+interfaces. The complete project notice is in THIRD_PARTY_NOTICES.md. No
+third-party autonomous-player or cheat-client source is copied into this tree.

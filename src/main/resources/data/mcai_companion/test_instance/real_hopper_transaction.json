@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "minecraft:default",
+  "max_ticks": 100,
+  "function": "mcai_companion:real_hopper_transaction",
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "minVersion": "0.8.7",
+  "package": "dev.mcai.companion.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "AbstractBoatControlInvoker",
+    "HeadlessBoatAuthorityMixin",
+    "HeadlessBoatControlMixin",
+    "HeadlessPlayerPhysicsMixin",
+    "WorldGenSettingsAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

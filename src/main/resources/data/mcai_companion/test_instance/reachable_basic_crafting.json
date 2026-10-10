@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_reachable_basic_crafting",
+  "function": "mcai_companion:reachable_basic_crafting",
+  "max_ticks": 4000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

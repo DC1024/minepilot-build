@@ -1,0 +1,102 @@
+schemaVersion = 2
+checkedAtUtc = "2026-08-23T02:05:00+09:00"
+compatChecker = "scripts/validate-compat.py"
+sources = [
+  "https://files.minecraftforge.net/net/minecraftforge/forge/index_26.2.html",
+  "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json",
+  "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml",
+]
+
+# This is the support declaration, not a test result.  The verifier below
+# deliberately keeps the declaration and the observed runtime evidence in
+# separate fields so a wide loader range cannot be mistaken for compatibility.
+[[line]]
+id = "forge65"
+forgeMajor = 65
+minecraft = "26.2"
+minimumForge = "65.0.0"
+recommendedForge = "65.1.0"
+latestForge = "65.1.2"
+module = "forge65"
+status = "required"
+verificationStatus = "ACTIVE_UNVERIFIED_MATRIX"
+java = 25
+compileFloor = "65.0.0"
+runtimeRange = "[65.0.0,66.0.0)"
+sourceBranch = "26.2"
+sourceCommitObserved = "f0f144156b5c8d7ccbe358772e9e33b57d849d5e"
+publishedPatches = [
+  "65.0.0",
+  "65.0.1",
+  "65.0.2",
+  "65.0.3",
+  "65.0.4",
+  "65.0.5",
+  "65.0.6",
+  "65.0.7",
+  "65.0.8",
+  "65.0.9",
+  "65.1.0",
+  "65.1.1",
+  "65.1.2",
+]
+
+# These arrays are intentionally narrow.  Compilation and lifecycle smoke
+# evidence do not constitute the formal chat/movement/menu matrix.
+compileVerifiedPatches = [
+  "65.0.0",
+  "65.0.1",
+  "65.0.2",
+  "65.0.3",
+  "65.0.4",
+  "65.0.5",
+  "65.0.6",
+  "65.0.7",
+  "65.0.8",
+  "65.0.9",
+  "65.1.0",
+  "65.1.1",
+  "65.1.2",
+]
+runtimeSmokeVerifiedPatches = [
+  "65.0.0",
+  "65.0.1",
+  "65.0.2",
+  "65.0.3",
+  "65.0.4",
+  "65.0.5",
+  "65.0.6",
+  "65.0.7",
+  "65.0.8",
+  "65.0.9",
+  "65.1.0",
+  "65.1.1",
+  "65.1.2",
+]
+runtimeSmokeTests = [
+  "zero_human_dedicated_server_chunk_and_respawn",
+  "auto_presence_on_human_login",
+]
+formalMatrixUnverifiedPatches = [
+  "65.0.0",
+  "65.0.1",
+  "65.0.2",
+  "65.0.3",
+  "65.0.4",
+  "65.0.5",
+  "65.0.6",
+  "65.0.7",
+  "65.0.8",
+  "65.0.9",
+  "65.1.0",
+  "65.1.1",
+  "65.1.2",
+]
+
+floorMdk = { forge = "65.0.0", gradle = "9.3.1", eventbusValidator = "7.0.1", sha1 = "b3cf4244b88b3ac2dc184dd2f46c5a681cce2686", sha256 = "812efe4948f2b9560892cd4ae775358645ccb03a7c54adb61f1d2ab2b642c1cf" }
+recommendedMdk = { forge = "65.1.0", gradle = "9.5.0", eventbusValidator = "7.0.5", sha1 = "83257cb3f4b6fedd6fe829b65982270f38bf960c", sha256 = "fb9ca9d22ef5837e0b6d1778677a1b99358efe6969ef83ac5726710c107f754b" }
+
+[future.forge66]
+released = false
+status = "NOT_APPLICABLE_UNTIL_OFFICIAL_RELEASE"
+policy = "Create a separate mapping adapter and product JAR; never widen forge65."

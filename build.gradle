@@ -1,0 +1,908 @@
+// This is a minimal setup of a Forge mod workspace.
+// For complex examples (including AccessTransformers, Jar-in-Jar, and Mixin), see our examples repository.
+// https://github.com/MinecraftForge/MDKExamples
+
+plugins {
+    id 'java'
+    id 'idea'
+    id 'eclipse'
+    // 7.0.34 is pinned: ForgeGradle 7.0.35 queries the mapped
+    // slimeLauncherMetadata output before its producer completes under the
+    // locked Gradle 9.5 wrapper, preventing real GameTests from starting.
+    id 'net.minecraftforge.gradle' version '7.0.34'
+    id 'net.minecraftforge.jarjar' version '0.2.3'
+}
+
+version = '0.1.16-dev-mc26.2'
+group = 'dev.mcai.companion'
+base.archivesName = 'mcai_companion'
+
+// The release is built against the oldest supported Forge 65 patch. CI and
+// local compatibility checks can select another 65.x patch with
+// -Pforge_compile_version=65.0.8 without changing release metadata.
+def forgeCompileVersion = providers.gradleProperty(
+    'forge_compile_version'
+).getOrElse('65.0.0')
+
+// Mojang ships Java 25 to end users in 26.1+, so your mod should target Java 25.
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+/*
+ * ForgeGradle's merged source-set mode writes main classes under
+ * build/sourceSets/main. Gradle's remote/local JavaCompile cache entry does
+ * not restore that transformed directory on a clean checkout: compileJava
+ * can report FROM-CACHE while compileTestJava then sees an empty production
+ * classpath. Compile the main source set locally until ForgeGradle exposes
+ * that transformed output as a complete cache artifact. This preserves
+ * deterministic clean builds; the E2E source sets remain cacheable.
+ */
+tasks.named('compileJava') {
+    outputs.doNotCacheIf(
+        'ForgeGradle merged main output is not fully cache-restorable'
+    ) { true }
+}
+
+/*
+ * Real-client E2E support is compiled into two separate, test-only Mods.
+ * Neither source set is on the production JAR input.  Development runs use
+ * these source sets directly; the formal orchestrator installs the dedicated
+ * test JARs beside the exact frozen production JAR.
+ */
+sourceSets {
+    e2eClient
+    e2eOracle
+}
+
+configurations {
+    mcaiForgeApi
+    implementation.extendsFrom mcaiForgeApi
+    e2eClientImplementation.extendsFrom mcaiForgeApi
+    e2eClientAnnotationProcessor.extendsFrom annotationProcessor
+    e2eOracleImplementation.extendsFrom mcaiForgeApi
+    e2eOracleAnnotationProcessor.extendsFrom annotationProcessor
+}
+
+// Include generated resources
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+def e2eInstanceRoot = providers.gradleProperty(
+    'e2e_instance_root'
+).getOrElse(
+    layout.projectDirectory.dir('run-e2e').asFile.absolutePath
+)
+
+// GameTest worlds persist SavedData between invocations.  The default keeps
+// the normal ForgeGradle `run` layout, while patch-matrix jobs can provide a
+// separate directory so one patch's companion lifecycle cannot contaminate
+// another patch's inner-loop result.
+def gameTestWorkingDir = providers.gradleProperty(
+    'gametest_working_dir'
+).map { file(it) }.getOrElse(file('run'))
+
+/*
+ * A Forge patch-matrix GameTest is a real server process, and its compiled
+ * classes are consumed while that process is running.  Two Gradle invocations
+ * for different Forge patches must not share `build/classes` or generated
+ * run metadata: the later compile can otherwise replace a Mixin class while
+ * the earlier server is still starting.  Isolate opted-in GameTest builds by
+ * Forge patch and temporary working-directory name.  Ordinary `check`,
+ * `build`, and release paths continue to use the stable root `build/` layout.
+ */
+if (providers.gradleProperty('gametest_working_dir').isPresent()) {
+    def safeForgeVersion = forgeCompileVersion.replaceAll('[^A-Za-z0-9_.-]', '_')
+    def safeGameTestRun = gameTestWorkingDir.name
+            .replaceAll('[^A-Za-z0-9_.-]', '_')
+    layout.buildDirectory.set(layout.projectDirectory.dir(
+        "build/gametest-${safeForgeVersion}-${safeGameTestRun}"
+    ))
+}
+
+minecraft {
+    runs {
+        configureEach {
+            workingDir = layout.projectDirectory.dir('run')
+
+            systemProperty 'eventbus.api.strictRuntimeChecks', 'true'
+            systemProperty 'forge.enabledGameTestNamespaces', 'mcai_companion'
+            args '--mixin.config', 'mcai_companion.mixins.json'
+            args '--mixin.config', 'mcai_companion.client.mixins.json'
+            if (providers.gradleProperty('live_model_test')
+                    .getOrElse('false')
+                    .toBoolean()) {
+                systemProperty 'mcai.liveModelTest', 'true'
+            }
+        }
+
+        register('client') {
+            if (System.getProperty('os.name')
+                    .toLowerCase(java.util.Locale.ROOT)
+                    .contains('mac')) {
+                // LWJGL 3.4 enforces Cocoa/GLFW initialization on the first
+                // process thread. Production launchers already provide this;
+                // ForgeGradle's local run configuration needs it explicitly.
+                jvmArgs '-XstartOnFirstThread'
+            }
+        }
+
+        register('server') {
+            args '--nogui'
+        }
+
+        register('gameTestServer') {
+            workingDir = gameTestWorkingDir
+            /*
+             * Mojang's bare GameTest server leaves player view/simulation
+             * distances at zero. The test-only mixin restores production-like
+             * player chunk tickets for every GameTest run and is audited out
+             * of the release JAR. Its 20 TPS wall-clock throttle remains
+             * separately opt-in below.
+             */
+            args '--mixin.config',
+                'mcai_companion.gametest.mixins.json'
+            if (providers.gradleProperty('zero_human_autospawn_test')
+                    .getOrElse('false')
+                    .toBoolean()) {
+                /*
+                 * Opt-in production-startup gate. Keep this disabled for the
+                 * ordinary parallel GameTest suite because those fixtures
+                 * deliberately own their companion lifecycle.
+                 */
+                systemProperty 'mcai.zeroHumanAutoSpawnTest', 'true'
+            }
+            def liveModelEnabled = providers
+                    .gradleProperty('live_model_test')
+                    .getOrElse('false')
+                    .toBoolean()
+            def genericSelector = providers
+                    .gradleProperty('test_selector')
+            def legacyLiveSelector = providers
+                    .gradleProperty('live_model_selector')
+            if (genericSelector.isPresent()
+                    && legacyLiveSelector.isPresent()
+                    && genericSelector.get()
+                        != legacyLiveSelector.get()) {
+                throw new GradleException(
+                    'test_selector and live_model_selector disagree; '
+                        + 'provide only one selector or make them identical.'
+                )
+            }
+            /* test_selector is the generic public option. Keep the older
+             * live_model_selector as a compatible alias for existing CI and
+             * live-evidence commands. */
+            def requestedSelector = genericSelector
+                    .orElse(legacyLiveSelector)
+            if (requestedSelector.isPresent()) {
+                def selector = requestedSelector.get()
+                def selectsLiveModelScenario = selector.contains('live_model')
+                        || selector.contains('surprise_zombie_defense')
+                        || (selector.contains('critical_golden_apple')
+                            && !selector.contains('offline_critical_golden_apple'))
+                        || selector.contains('zero_human_dedicated_server_foundation')
+                if (selectsLiveModelScenario && !liveModelEnabled) {
+                    throw new GradleException(
+                        "${selector} is a live-model GameTest; "
+                            + "rerun with -Plive_model_test=true and a "
+                            + "configured credential. A selected live-model "
+                            + "test must never pass by taking its no-model "
+                            + "skip path."
+                    )
+                }
+                /*
+                 * A selector is useful for physical/non-model GameTests too.
+                 * Previously it was silently ignored unless
+                 * live_model_test=true, unexpectedly launching the complete
+                 * suite and polluting focused evidence.
+                 */
+                args '--tests', selector
+            } else if (liveModelEnabled) {
+                args '--tests',
+                    'mcai_companion:*live_model*'
+            }
+            if (providers.gradleProperty('realtime_gametest')
+                    .getOrElse('false')
+                    .toBoolean()) {
+                systemProperty 'mcai.realtimeGameTest', 'true'
+            }
+            if (providers.gradleProperty('test_iteration').isPresent()) {
+                systemProperty 'mcai.testIteration', providers
+                    .gradleProperty('test_iteration').get()
+            }
+        }
+
+        register('data') {
+            workingDir = layout.projectDirectory.dir('run-data')
+
+            args '--mod', 'mcai_companion', '--all', '--output', layout.projectDirectory.dir('src/generated/resources'), '--existing', layout.projectDirectory.dir('src/main/resources')
+        }
+
+        register('e2eServer') {
+            mainClass = 'net.minecraftforge.bootstrap.ForgeBootstrap'
+            client = false
+            args '--launchTarget', 'forge_userdev_server'
+            args '--gameDir', '.'
+            jvmArgs '-Djava.net.preferIPv6Addresses=system'
+            jvmArgs '-XX:+UseCompactObjectHeaders'
+            environment 'MCP_MAPPINGS', '{mcp_mappings}'
+            workingDir = file("${e2eInstanceRoot}/server")
+            args '--nogui'
+            args '--port', providers.gradleProperty('e2e_port')
+                    .getOrElse('25575')
+            systemProperty 'mcai.e2e.enabled', 'true'
+            systemProperty 'mcai.e2e.resultsRoot',
+                    providers.gradleProperty('e2e_run_root').getOrElse(
+                        layout.projectDirectory
+                            .dir('e2e/results/dev/manual')
+                            .asFile.absolutePath
+                    )
+            systemProperty 'mcai.e2e.nonce',
+                    providers.gradleProperty('e2e_nonce')
+                            .getOrElse('DEVNONCE')
+            systemProperty 'mcai.e2e.actorName',
+                    providers.gradleProperty('e2e_actor_name')
+                            .getOrElse('MCAIActor')
+            systemProperty 'mcai.e2e.observerName',
+                    providers.gradleProperty('e2e_observer_name')
+                            .getOrElse('MCAIObserver')
+            systemProperty 'mcai.e2e.aiName',
+                    providers.gradleProperty('e2e_ai_name')
+                            .getOrElse('MCAI')
+            systemProperty 'mcai.e2e.scenario',
+                    providers.gradleProperty('e2e_scenario')
+                            .getOrElse('chat_follow_inventory')
+            mods {
+                mcai_companion {
+                    source sourceSets.main
+                }
+                mcai_e2e_oracle {
+                    source sourceSets.e2eOracle
+                }
+            }
+        }
+
+        register('e2eActorClient') {
+            mainClass = 'net.minecraftforge.bootstrap.ForgeBootstrap'
+            client = true
+            args '--launchTarget', 'forge_userdev_client'
+            args '--version', 'MOD_DEV'
+            args '--assetIndex', '{asset_index}'
+            args '--assetsDir', '{assets_root}'
+            args '--gameDir', '.'
+            jvmArgs '-Djava.net.preferIPv6Addresses=system'
+            jvmArgs '-XX:+UseCompactObjectHeaders'
+            environment 'MCP_MAPPINGS', '{mcp_mappings}'
+            workingDir = file("${e2eInstanceRoot}/actor")
+            args '--username', providers
+                    .gradleProperty('e2e_actor_name')
+                    .getOrElse('MCAIActor')
+            if (System.getProperty('os.name')
+                    .toLowerCase(java.util.Locale.ROOT)
+                    .contains('mac')) {
+                jvmArgs '-XstartOnFirstThread'
+            }
+            systemProperty 'mcai.e2e.enabled', 'true'
+            systemProperty 'mcai.companion.hiddenRenderer', 'true'
+            systemProperty 'mcai.e2e.role', 'actor'
+            systemProperty 'mcai.e2e.server',
+                    providers.gradleProperty('e2e_server')
+                            .getOrElse('127.0.0.1:25575')
+            systemProperty 'mcai.e2e.resultsRoot',
+                    providers.gradleProperty('e2e_run_root').getOrElse(
+                        layout.projectDirectory
+                            .dir('e2e/results/dev/manual')
+                            .asFile.absolutePath
+                    )
+            systemProperty 'mcai.e2e.nonce',
+                    providers.gradleProperty('e2e_nonce')
+                            .getOrElse('DEVNONCE')
+            systemProperty 'mcai.e2e.aiName',
+                    providers.gradleProperty('e2e_ai_name')
+                            .getOrElse('MCAI')
+            systemProperty 'mcai.e2e.scenario',
+                    providers.gradleProperty('e2e_scenario')
+                            .getOrElse('chat_follow_inventory')
+            systemProperty 'mcai.e2e.chat',
+                    providers.gradleProperty('e2e_chat').getOrElse(
+                        'MCAI, walk to me and follow me. Task ID DEVNONCE'
+                    )
+            systemProperty 'mcai.e2e.inventoryChat',
+                    providers.gradleProperty(
+                        'e2e_inventory_chat'
+                    ).getOrElse(
+                        'MCAI, pick up the oak log dropped in front of you.'
+                            + ' Task ID DEVNONCE-ITEM'
+                    )
+            mods {
+                mcai_companion {
+                    source sourceSets.main
+                }
+                mcai_e2e_client {
+                    source sourceSets.e2eClient
+                }
+            }
+        }
+
+        register('e2eObserverClient') {
+            mainClass = 'net.minecraftforge.bootstrap.ForgeBootstrap'
+            client = true
+            args '--launchTarget', 'forge_userdev_client'
+            args '--version', 'MOD_DEV'
+            args '--assetIndex', '{asset_index}'
+            args '--assetsDir', '{assets_root}'
+            args '--gameDir', '.'
+            jvmArgs '-Djava.net.preferIPv6Addresses=system'
+            jvmArgs '-XX:+UseCompactObjectHeaders'
+            environment 'MCP_MAPPINGS', '{mcp_mappings}'
+            workingDir = file("${e2eInstanceRoot}/observer")
+            args '--username', providers
+                    .gradleProperty('e2e_observer_name')
+                    .getOrElse('MCAIObserver')
+            if (System.getProperty('os.name')
+                    .toLowerCase(java.util.Locale.ROOT)
+                    .contains('mac')) {
+                jvmArgs '-XstartOnFirstThread'
+            }
+            systemProperty 'mcai.e2e.enabled', 'true'
+            systemProperty 'mcai.companion.hiddenRenderer', 'true'
+            systemProperty 'mcai.e2e.role', 'observer'
+            systemProperty 'mcai.e2e.server',
+                    providers.gradleProperty('e2e_server')
+                            .getOrElse('127.0.0.1:25575')
+            systemProperty 'mcai.e2e.resultsRoot',
+                    providers.gradleProperty('e2e_run_root').getOrElse(
+                        layout.projectDirectory
+                            .dir('e2e/results/dev/manual')
+                            .asFile.absolutePath
+                    )
+            systemProperty 'mcai.e2e.nonce',
+                    providers.gradleProperty('e2e_nonce')
+                            .getOrElse('DEVNONCE')
+            systemProperty 'mcai.e2e.aiName',
+                    providers.gradleProperty('e2e_ai_name')
+                            .getOrElse('MCAI')
+            systemProperty 'mcai.e2e.scenario',
+                    providers.gradleProperty('e2e_scenario')
+                            .getOrElse('chat_follow_inventory')
+            mods {
+                mcai_companion {
+                    source sourceSets.main
+                }
+                mcai_e2e_client {
+                    source sourceSets.e2eClient
+                }
+            }
+        }
+
+        /*
+         * Installed-product variants deliberately omit sourceSets.main.
+         * The Orchestrator copies the exact jarJar output into each isolated
+         * mods directory, while ForgeGradle supplies only the test harness
+         * source set. This makes the production JAR SHA in the manifest the
+         * bytes actually loaded by all three real processes.
+         */
+        register('e2eInstalledServer') {
+            mainClass = 'net.minecraftforge.bootstrap.ForgeBootstrap'
+            client = false
+            args '--launchTarget', 'forge_userdev_server'
+            args '--gameDir', '.'
+            jvmArgs '-Djava.net.preferIPv6Addresses=system'
+            jvmArgs '-XX:+UseCompactObjectHeaders'
+            environment 'MCP_MAPPINGS', '{mcp_mappings}'
+            workingDir = file("${e2eInstanceRoot}/server")
+            args '--nogui'
+            args '--port', providers.gradleProperty('e2e_port')
+                    .getOrElse('25575')
+            systemProperty 'mcai.e2e.enabled', 'true'
+            systemProperty 'mcai.e2e.resultsRoot',
+                    providers.gradleProperty('e2e_run_root').getOrElse(
+                        layout.projectDirectory
+                            .dir('e2e/results/dev/manual')
+                            .asFile.absolutePath
+                    )
+            systemProperty 'mcai.e2e.nonce',
+                    providers.gradleProperty('e2e_nonce')
+                            .getOrElse('DEVNONCE')
+            systemProperty 'mcai.e2e.actorName',
+                    providers.gradleProperty('e2e_actor_name')
+                            .getOrElse('MCAIActor')
+            systemProperty 'mcai.e2e.observerName',
+                    providers.gradleProperty('e2e_observer_name')
+                            .getOrElse('MCAIObserver')
+            systemProperty 'mcai.e2e.aiName',
+                    providers.gradleProperty('e2e_ai_name')
+                            .getOrElse('MCAI')
+            systemProperty 'mcai.e2e.scenario',
+                    providers.gradleProperty('e2e_scenario')
+                            .getOrElse('chat_follow_inventory')
+            mods {
+                mcai_e2e_oracle {
+                    source sourceSets.e2eOracle
+                }
+            }
+        }
+
+        register('e2eInstalledActorClient') {
+            mainClass = 'net.minecraftforge.bootstrap.ForgeBootstrap'
+            client = true
+            args '--launchTarget', 'forge_userdev_client'
+            args '--version', 'MOD_DEV'
+            args '--assetIndex', '{asset_index}'
+            args '--assetsDir', '{assets_root}'
+            args '--gameDir', '.'
+            jvmArgs '-Djava.net.preferIPv6Addresses=system'
+            jvmArgs '-XX:+UseCompactObjectHeaders'
+            environment 'MCP_MAPPINGS', '{mcp_mappings}'
+            workingDir = file("${e2eInstanceRoot}/actor")
+            args '--username', providers
+                    .gradleProperty('e2e_actor_name')
+                    .getOrElse('MCAIActor')
+            if (System.getProperty('os.name')
+                    .toLowerCase(java.util.Locale.ROOT)
+                    .contains('mac')) {
+                jvmArgs '-XstartOnFirstThread'
+            }
+            systemProperty 'mcai.e2e.enabled', 'true'
+            systemProperty 'mcai.companion.hiddenRenderer', 'true'
+            systemProperty 'mcai.e2e.role', 'actor'
+            systemProperty 'mcai.e2e.server',
+                    providers.gradleProperty('e2e_server')
+                            .getOrElse('127.0.0.1:25575')
+            systemProperty 'mcai.e2e.resultsRoot',
+                    providers.gradleProperty('e2e_run_root').getOrElse(
+                        layout.projectDirectory
+                            .dir('e2e/results/dev/manual')
+                            .asFile.absolutePath
+                    )
+            systemProperty 'mcai.e2e.nonce',
+                    providers.gradleProperty('e2e_nonce')
+                            .getOrElse('DEVNONCE')
+            systemProperty 'mcai.e2e.aiName',
+                    providers.gradleProperty('e2e_ai_name')
+                            .getOrElse('MCAI')
+            systemProperty 'mcai.e2e.scenario',
+                    providers.gradleProperty('e2e_scenario')
+                            .getOrElse('chat_follow_inventory')
+            systemProperty 'mcai.e2e.chat',
+                    providers.gradleProperty('e2e_chat').getOrElse(
+                        'MCAI, walk to me and follow me. Task ID DEVNONCE'
+                    )
+            systemProperty 'mcai.e2e.inventoryChat',
+                    providers.gradleProperty(
+                        'e2e_inventory_chat'
+                    ).getOrElse(
+                        'MCAI, pick up the oak log dropped in front of you.'
+                            + ' Task ID DEVNONCE-ITEM'
+                    )
+            mods {
+                mcai_e2e_client {
+                    source sourceSets.e2eClient
+                }
+            }
+        }
+
+        register('e2eInstalledObserverClient') {
+            mainClass = 'net.minecraftforge.bootstrap.ForgeBootstrap'
+            client = true
+            args '--launchTarget', 'forge_userdev_client'
+            args '--version', 'MOD_DEV'
+            args '--assetIndex', '{asset_index}'
+            args '--assetsDir', '{assets_root}'
+            args '--gameDir', '.'
+            jvmArgs '-Djava.net.preferIPv6Addresses=system'
+            jvmArgs '-XX:+UseCompactObjectHeaders'
+            environment 'MCP_MAPPINGS', '{mcp_mappings}'
+            workingDir = file("${e2eInstanceRoot}/observer")
+            args '--username', providers
+                    .gradleProperty('e2e_observer_name')
+                    .getOrElse('MCAIObserver')
+            if (System.getProperty('os.name')
+                    .toLowerCase(java.util.Locale.ROOT)
+                    .contains('mac')) {
+                jvmArgs '-XstartOnFirstThread'
+            }
+            systemProperty 'mcai.e2e.enabled', 'true'
+            systemProperty 'mcai.companion.hiddenRenderer', 'true'
+            systemProperty 'mcai.e2e.role', 'observer'
+            systemProperty 'mcai.e2e.server',
+                    providers.gradleProperty('e2e_server')
+                            .getOrElse('127.0.0.1:25575')
+            systemProperty 'mcai.e2e.resultsRoot',
+                    providers.gradleProperty('e2e_run_root').getOrElse(
+                        layout.projectDirectory
+                            .dir('e2e/results/dev/manual')
+                            .asFile.absolutePath
+                    )
+            systemProperty 'mcai.e2e.nonce',
+                    providers.gradleProperty('e2e_nonce')
+                            .getOrElse('DEVNONCE')
+            systemProperty 'mcai.e2e.aiName',
+                    providers.gradleProperty('e2e_ai_name')
+                            .getOrElse('MCAI')
+            systemProperty 'mcai.e2e.scenario',
+                    providers.gradleProperty('e2e_scenario')
+                            .getOrElse('chat_follow_inventory')
+            mods {
+                mcai_e2e_client {
+                    source sourceSets.e2eClient
+                }
+            }
+        }
+    }
+}
+
+repositories {
+    minecraft.mavenizer(it) // In Kotlin, it = this
+    maven fg.forgeMaven
+    maven fg.minecraftLibsMaven
+    mavenCentral()
+    maven {
+        name = "Xaero's Maven"
+        url = uri('https://chocolateminecraft.com/maven')
+        content {
+            includeGroup 'xaero.minimap'
+            includeGroup 'xaero.lib'
+        }
+    }
+}
+
+jarJar.register {
+    archiveClassifier = null
+    // The development slim jar intentionally omits mod metadata so it cannot
+    // be copied into a mods directory as a duplicate.  jarJar consumes that
+    // archive, so put the single installable descriptor back into the
+    // bundled product explicitly.
+    from(sourceSets.main.resources) {
+        include 'META-INF/mods.toml'
+    }
+}
+
+tasks.named('jar') {
+    archiveClassifier = 'slim'
+    // Keep the non-installable audit input out of build/libs. A user should
+    // be able to copy the contents of build/libs into a mods directory and
+    // receive exactly one Forge mod instead of accidentally loading a prior
+    // slim/fat development pair.
+    destinationDirectory = layout.buildDirectory.dir('audit-libs')
+    // The slim archive is a development/audit input, not a second installable
+    // mod.  Keeping mods.toml here makes a user who copies build/libs/* into
+    // mods load the same mod twice.  The jarJar archive below is the only
+    // installable artifact and retains the mod metadata plus SQLite payload.
+    exclude 'META-INF/mods.toml'
+    // GameTest fixtures intentionally use direct world setup and must never
+    // ship in the installable mod. They remain on the development run
+    // classpath so runGameTestServer can exercise production skills.
+    exclude 'dev/mcai/companion/embodiment/EmbodimentGameTests*.class'
+    exclude 'dev/mcai/companion/embodiment/GameTestCompanionSpawn*.class'
+    exclude 'dev/mcai/companion/skills/inventory/InventoryGameTests*.class'
+    exclude 'dev/mcai/companion/skills/menu/MenuGameTests*.class'
+    exclude 'dev/mcai/companion/skills/loot/LootGameTests*.class'
+    exclude 'dev/mcai/companion/skills/farming/FarmingGameTests*.class'
+    exclude 'dev/mcai/companion/communication/LiveModelChatGameTests*.class'
+    exclude 'dev/mcai/companion/skills/portal/PortalCastGameTests*.class'
+    exclude 'dev/mcai/companion/skills/end/EndIslandIngressGameTests*.class'
+    exclude 'dev/mcai/companion/skills/building/BuildingGameTests*.class'
+    exclude 'dev/mcai/companion/skills/foundation/FoundationGameTests*.class'
+    exclude 'dev/mcai/companion/skills/foundation/ShelterMaterialExplorationGameTests*.class'
+    exclude 'dev/mcai/companion/skills/foundation/WorkstationPrerequisiteGameTests*.class'
+    exclude 'dev/mcai/companion/skills/redstone/RedstoneGameTests*.class'
+    exclude 'dev/mcai/companion/mixin/gametest/**'
+    exclude 'data/mcai_companion/test_instance/**'
+    exclude 'data/mcai_companion/test_environment/**'
+    exclude 'mcai_companion.gametest.mixins.json'
+    manifest {
+        attributes(
+            'Specification-Title': 'Minecraft AI Companion',
+            'Specification-Vendor': 'mcai',
+            'Specification-Version': project.version,
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': 'mcai',
+            'MixinConfigs': 'mcai_companion.mixins.json,mcai_companion.client.mixins.json'
+        )
+    }
+}
+
+/*
+ * Gradle does not remove artifacts from an older version when the project
+ * version is bumped. That left multiple installable mcai_companion jars in
+ * build/libs, which Forge correctly treated as duplicate mod IDs when a
+ * user copied the whole directory. Old generated artifacts are moved to a
+ * recoverable archive rather than deleted; the operation never touches
+ * source files, run worlds, credentials, or the audit directory.
+ */
+def productLibDirectory = layout.buildDirectory.dir('libs').get().asFile
+def archivedProductDirectory = layout.buildDirectory
+    .dir('archive-libs').get().asFile
+def currentProductFileName = "mcai_companion-${version}.jar"
+tasks.register('archiveStaleProductJars') {
+    doLast {
+        if (!productLibDirectory.isDirectory()) {
+            return
+        }
+        java.nio.file.Files.createDirectories(
+            archivedProductDirectory.toPath()
+        )
+        java.nio.file.Files.list(productLibDirectory.toPath()).withCloseable {
+            stream -> stream
+                .filter { path ->
+                    def name = path.fileName.toString()
+                    name.startsWith('mcai_companion-') && name.endsWith('.jar')
+                        && name != currentProductFileName
+                }
+                .forEach { path ->
+                    def archivedName = "${path.fileName}.${System.currentTimeMillis()}.bak"
+                    java.nio.file.Files.move(
+                        path,
+                        archivedProductDirectory.toPath()
+                            .resolve(archivedName)
+                    )
+                }
+        }
+    }
+}
+
+tasks.named('jarJar') {
+    dependsOn tasks.named('archiveStaleProductJars')
+}
+
+dependencies {
+    // Compile against the oldest supported 26.2 Forge patch.  Runtime
+    // metadata accepts later 65.x patches so players are not forced onto one
+    // exact loader build.
+    mcaiForgeApi minecraft.dependency(
+        "net.minecraftforge:forge:26.2-${forgeCompileVersion}"
+    )
+    /*
+     * Give each test Mod the Forge API without inheriting production runtime
+     * libraries. In installed-product runs SQLite must come only from the
+     * product JAR's Jar-in-Jar payload; inheriting main implementation here
+     * would place a second org.xerial.sqlitejdbc module on the launch path.
+     */
+    annotationProcessor 'net.minecraftforge:eventbus-validator:7.0.1'
+
+    implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
+    jarJar('org.xerial:sqlite-jdbc:3.50.3.0')
+
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    // Use the UTF-8 charset for Java compilation
+    // This is done by default in Java 18+, but this ensures it no matter the Java or Gradle version
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    jvmArgs '--add-modules', 'jdk.httpserver'
+}
+
+tasks.named('assemble') {
+    dependsOn tasks.named('jarJar')
+    dependsOn tasks.named('e2eClientJar')
+    dependsOn tasks.named('e2eOracleJar')
+}
+
+tasks.register('e2eClientJar', Jar) {
+    archiveBaseName = 'mcai-e2e-client'
+    archiveVersion = project.version
+    from sourceSets.e2eClient.output
+    destinationDirectory = layout.buildDirectory.dir('e2e-libs')
+}
+
+tasks.register('e2eOracleJar', Jar) {
+    archiveBaseName = 'mcai-e2e-oracle'
+    archiveVersion = project.version
+    from sourceSets.e2eOracle.output
+    destinationDirectory = layout.buildDirectory.dir('e2e-libs')
+}
+
+def slimReleaseJar = tasks.named('jar').flatMap {
+    it.archiveFile
+}
+def bundledReleaseJar = tasks.named('jarJar').flatMap {
+    it.archiveFile
+}
+
+tasks.register('verifyReleaseJar') {
+    dependsOn tasks.named('jar')
+    dependsOn tasks.named('jarJar')
+    inputs.files(slimReleaseJar, bundledReleaseJar)
+
+    doLast {
+        def releaseJars = [
+            slimReleaseJar.get().asFile,
+            bundledReleaseJar.get().asFile
+        ]
+        def installableDirectory = bundledReleaseJar.get().asFile.parentFile
+        def installableCandidates = java.nio.file.Files.list(
+            installableDirectory.toPath()
+        ).withCloseable { stream ->
+            stream
+                .filter { path ->
+                    def name = path.fileName.toString()
+                    name.startsWith('mcai_companion-')
+                        && name.endsWith('.jar')
+                        && !name.endsWith('-slim.jar')
+                }
+                .map { path -> path.toFile().canonicalFile }
+                .toList()
+        }
+        if (installableCandidates.size() != 1
+                || installableCandidates[0]
+                    != bundledReleaseJar.get().asFile.canonicalFile) {
+            throw new GradleException(
+                'build/libs must contain exactly one current installable '
+                    + 'mcai_companion JAR; found '
+                    + installableCandidates.collect { it.name }
+            )
+        }
+        releaseJars.each { releaseJar ->
+            def archive = new java.util.jar.JarFile(releaseJar)
+            try {
+                def installable = !releaseJar.name.endsWith('-slim.jar')
+                def hasModMetadata = archive.getJarEntry(
+                    'META-INF/mods.toml'
+                ) != null
+                if (installable != hasModMetadata) {
+                    throw new GradleException(
+                        (installable ? 'Installable' : 'Slim')
+                            + ' release JAR metadata mismatch: '
+                            + releaseJar.name
+                    )
+                }
+                def forbidden = []
+                archive.entries().each { entry ->
+                    def name = entry.name
+                    def fileName = name.substring(
+                        name.lastIndexOf('/') + 1
+                    )
+                    if (fileName ==~ /.*GameTests?(?:\$.*)?\.class/
+                            || name.startsWith(
+                                'data/mcai_companion/test_instance/'
+                            )
+                            || name.startsWith(
+                                'data/mcai_companion/test_environment/'
+                            )
+                            || name.startsWith(
+                                'dev/mcai/companion/mixin/gametest/'
+                            )
+                            || name.equals(
+                                'mcai_companion.gametest.mixins.json'
+                            )
+                            || name.startsWith(
+                                'dev/mcai/e2e/'
+                            )) {
+                        forbidden.add(name)
+                    }
+                }
+                if (!forbidden.isEmpty()) {
+                    throw new GradleException(
+                        "Release JAR contains GameTest fixtures: "
+                            + forbidden.sort().join(', ')
+                    )
+                }
+                [
+                    'mcai_companion.mixins.json',
+                    'dev/mcai/companion/mixin/'
+                        + 'AbstractBoatControlInvoker.class',
+                    'dev/mcai/companion/skills/transport/'
+                        + 'HeadlessBoatAuthority.class',
+                    'dev/mcai/companion/mixin/'
+                        + 'HeadlessBoatAuthorityMixin.class',
+                    'dev/mcai/companion/mixin/'
+                        + 'HeadlessBoatControlMixin.class',
+                    'dev/mcai/companion/mixin/'
+                        + 'HeadlessPlayerPhysicsMixin.class'
+                ].each { requiredEntry ->
+                    if (archive.getJarEntry(requiredEntry) == null) {
+                        throw new GradleException(
+                            "Release JAR is missing required headless "
+                                + "physics entry: " + requiredEntry
+                        )
+                    }
+                }
+                def mixinConfigs = archive.manifest
+                    ?.mainAttributes
+                    ?.getValue('MixinConfigs')
+                    ?.split(',')
+                    ?.collect { it.trim() }
+                if (mixinConfigs == null
+                        || !mixinConfigs.contains(
+                            'mcai_companion.mixins.json'
+                        )) {
+                    throw new GradleException(
+                        "Release JAR manifest does not activate "
+                            + "mcai_companion.mixins.json"
+                    )
+                }
+            } finally {
+                archive.close()
+            }
+        }
+    }
+}
+
+/*
+ * The compatibility declaration is an input to every release review.  This
+ * task validates its schema/evidence separation but intentionally does not
+ * promote the formal Forge patch matrix; that promotion requires the archived
+ * real-client and model runs described by GOAL_STATE.json.
+ */
+tasks.register('compat-checker', Exec) {
+    inputs.file(layout.projectDirectory.file('compat/forge-lines.toml'))
+    inputs.file(layout.projectDirectory.file('scripts/validate-compat.py'))
+    commandLine 'python3', 'scripts/validate-compat.py'
+}
+
+// Online major-line discovery is intentionally explicit rather than part of
+// ordinary `check`: offline developer builds must remain reproducible, while
+// release/compatibility workflows must fail as soon as Forge promotes a new
+// major without an adapter module.
+tasks.register('forge-major-discovery', Exec) {
+    inputs.file(layout.projectDirectory.file('compat/forge-lines.toml'))
+    inputs.file(layout.projectDirectory.file('scripts/discover-forge-lines.py'))
+    commandLine(
+        'python3',
+        'scripts/discover-forge-lines.py',
+        '--declaration',
+        layout.projectDirectory.file('compat/forge-lines.toml').asFile.absolutePath,
+        '--check-patches'
+    )
+    if (providers.gradleProperty('forge_promotions_file').isPresent()) {
+        args '--promotions-file', providers.gradleProperty(
+            'forge_promotions_file'
+        ).get()
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('compat-checker')
+}
+
+/*
+ * Stable formal-gate entry points required by the project acceptance plan.
+ * The Python runner records NOT_RUN/FAIL/PASS evidence and never turns a
+ * missing Linux client, model, statistical batch, or mutation scenario into
+ * a green result.  These tasks are intentionally not dependencies of build:
+ * packaging must remain usable while the external release gates are pending.
+ */
+[
+    'e2eFunctional',
+    'e2eRendered',
+    'e2eChat',
+    'e2eMovement',
+    'e2eInventory',
+    'e2eRestart',
+    'e2eXaero',
+    'e2eM1',
+    'e2eM2',
+    'e2eM3',
+    'e2eM4Shard',
+    'aggregateHiddenSeeds',
+    'soak24h',
+    'soak100h',
+    'recordHumanBaseline',
+    'naturalnessReport',
+    'mutationGate'
+].each { gateName ->
+    def formalForgeRuntime = providers.gradleProperty(
+        'forge_runtime_version'
+    ).getOrElse('65.1.0')
+    tasks.register(gateName, Exec) {
+        commandLine(
+            'python3',
+            'e2e/formal_gates.py',
+            '--gate',
+            gateName,
+            '--forge-version',
+            formalForgeRuntime
+        )
+    }
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('verifyReleaseJar')
+}

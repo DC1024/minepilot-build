@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8.7",
+  "package": "dev.mcai.companion.client.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "AbstractClientPlayerSkinMixin",
+    "HiddenRendererWindowMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

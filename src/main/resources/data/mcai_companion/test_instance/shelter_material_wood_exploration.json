@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_shelter_material_wood_exploration",
+  "function": "mcai_companion:shelter_material_wood_exploration",
+  "max_ticks": 8000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

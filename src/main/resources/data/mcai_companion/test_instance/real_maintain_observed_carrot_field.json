@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_real_maintain_observed_crop_field",
+  "function": "mcai_companion:real_maintain_observed_carrot_field",
+  "max_ticks": 12000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.mcai.companion.mixin.gametest",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "GameTestServerThrottleMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,0 +1,33 @@
+# See https://docs.minecraftforge.net/en/1.21.x/gettingstarted/modfiles/#modstoml
+# There are lots of things you can do with the mods.toml, and not all fields are included with this MDK
+# References: https://github.com/MinecraftForge/MDKExamples
+
+modLoader="javafml"
+loaderVersion="[65,66)"
+license="Apache-2.0"
+#clientSideOnly=true #optional, default=false
+
+[[mods]]
+modId="mcai_companion"
+version="0.1.16-dev-mc26.2"
+displayName="Minecraft AI Companion"
+authors="weida"
+#displayTest="MATCH_VERSION" #optional, default=MATCH_VERSION when not clientSideOnly, else IGNORE_ALL_VERSION
+
+description='''A fair-play, accountless AI companion embodied as a headless
+ServerPlayer. The language model chooses validated high-level skills while
+deterministic local controllers handle real-time safety and legal game actions.'''
+
+[[dependencies.mcai_companion]]
+    modId="forge"
+    mandatory=true
+    versionRange="[65.0.0,66)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.mcai_companion]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[26.2]"
+    ordering="NONE"
+    side="BOTH"

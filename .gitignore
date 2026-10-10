@@ -1,0 +1,53 @@
+# eclipse
+bin
+*.launch
+.settings
+.metadata
+.classpath
+.project
+
+# idea
+out
+*.ipr
+*.iws
+*.iml
+.idea
+
+# gradle
+build
+.gradle
+.toolchains
+
+# other
+eclipse
+run
+run-data
+/logs
+run-e2e
+e2e/results
+run-debug*/
+run-debug*.log
+run-live-*/
+run-delayed-*/
+run-offline-*/
+run-basic-*/
+run-locked-*/
+run-travel-*/
+run-patch-matrix/
+run-blackbox-*/
+installer.log
+
+# Local credentials and generated companion state
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+
+# macOS
+.DS_Store
+
+# Files from Forge MDK
+forge_README.txt
+forge*changelog.txt

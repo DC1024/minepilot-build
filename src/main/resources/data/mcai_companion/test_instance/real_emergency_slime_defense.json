@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_real_emergency_slime_defense",
+  "function": "mcai_companion:real_emergency_slime_defense",
+  "max_ticks": 1600,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

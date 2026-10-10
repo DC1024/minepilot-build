@@ -1,0 +1,7 @@
+{
+  "type": "minecraft:function",
+  "environment": "minecraft:default",
+  "function": "mcai_companion:locked_chest_recipe_uses_vanilla_menu_placement",
+  "max_ticks": 40,
+  "structure": "forge:empty3x3x3"
+}

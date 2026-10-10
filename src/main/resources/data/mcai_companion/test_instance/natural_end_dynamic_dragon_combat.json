@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_natural_end_dynamic_dragon_combat",
+  "function": "mcai_companion:natural_end_dynamic_dragon_combat",
+  "max_ticks": 12000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

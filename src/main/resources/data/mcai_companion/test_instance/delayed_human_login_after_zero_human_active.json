@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_auto_presence",
+  "function": "mcai_companion:delayed_human_login_after_zero_human_active",
+  "structure": "forge:empty48x32x48",
+  "max_ticks": 1600,
+  "sky_access": true,
+  "padding": 16
+}

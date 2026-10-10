@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_live_model_eye_craft_return_and_stronghold",
+  "function": "mcai_companion:real_player_task_to_live_model_eye_craft_return_and_stronghold",
+  "max_ticks": 600000,
+  "structure": "forge:empty600x24x600",
+  "sky_access": true,
+  "padding": 12
+}

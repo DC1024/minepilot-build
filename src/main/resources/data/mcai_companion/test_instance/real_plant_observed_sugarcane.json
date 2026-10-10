@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_real_plant_observed_sugarcane",
+  "function": "mcai_companion:real_plant_observed_sugarcane",
+  "max_ticks": 4000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

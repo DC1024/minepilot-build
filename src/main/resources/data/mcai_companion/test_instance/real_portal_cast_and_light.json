@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_real_portal_cast",
+  "function": "mcai_companion:real_portal_cast_and_light",
+  "max_ticks": 5000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

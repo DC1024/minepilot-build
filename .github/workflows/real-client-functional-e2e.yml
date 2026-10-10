@@ -1,0 +1,197 @@
+name: Real client functional E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      forge_version:
+        description: Forge 65.x runtime for the exact same product JAR
+        required: true
+        type: choice
+        default: 65.1.0
+        options:
+          - 65.0.0
+          - 65.0.1
+          - 65.0.2
+          - 65.0.3
+          - 65.0.4
+          - 65.0.5
+          - 65.0.6
+          - 65.0.7
+          - 65.0.8
+          - 65.0.9
+          - 65.1.0
+          - 65.1.1
+      base_url:
+        description: OpenAI-compatible HTTPS API base URL
+        required: true
+        type: string
+        default: https://token-plan-cn.xiaomimimo.com/v1
+      model_name:
+        description: Configured high-level model
+        required: true
+        type: string
+        default: mimo-v2.5
+  workflow_call:
+    inputs:
+      forge_version:
+        description: Forge 65.x runtime for the exact same product JAR
+        required: true
+        type: string
+      base_url:
+        description: OpenAI-compatible HTTPS API base URL
+        required: true
+        type: string
+      model_name:
+        description: Configured high-level model
+        required: true
+        type: string
+    secrets:
+      MCAI_API_KEY:
+        description: Provider API key; consumed only by the isolated worker
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcai-real-client-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  actor-observer:
+    name: Actor + Observer + real model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      MCAI_BASE_URL: ${{ inputs.base_url }}
+      MCAI_MODEL: ${{ inputs.model_name }}
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      __GLX_VENDOR_LIBRARY_NAME: mesa
+      ALSOFT_DRIVERS: "null"
+      XDG_RUNTIME_DIR: /tmp/mcai-xdg-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Temurin Java 25
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Install isolated software-rendering runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            xvfb \
+            xauth \
+            mesa-utils \
+            libgl1 \
+            libgl1-mesa-dri \
+            libglx-mesa0 \
+            libasound2t64 \
+            libfontconfig1 \
+            libfreetype6 \
+            libx11-6 \
+            libxext6 \
+            libxrender1 \
+            libxi6 \
+            libxrandr2 \
+            libxcursor1 \
+            libxinerama1 \
+            libxxf86vm1 \
+            libxfixes3 \
+            libxtst6 \
+            libxkbcommon0
+          mkdir --parents "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          Xvfb -help >/dev/null
+          java -version
+
+      - name: Discover promoted Forge major lines
+        shell: bash
+        run: |
+          python3 scripts/discover-forge-lines.py --json \
+            | tee forge-major-discovery.json
+
+      - name: Validate secret and harness contracts
+        shell: bash
+        env:
+          MCAI_API_KEY: ${{ secrets.MCAI_API_KEY }}
+        run: |
+          if [[ -z "$MCAI_API_KEY" ]]; then
+            echo "::error::Repository secret MCAI_API_KEY is not configured."
+            exit 2
+          fi
+          if [[ "$MCAI_BASE_URL" != https://* ]]; then
+            echo "::error::base_url must use HTTPS."
+            exit 2
+          fi
+          if [[ -z "$MCAI_MODEL" ]]; then
+            echo "::error::model_name must not be empty."
+            exit 2
+          fi
+          python3 -m unittest discover -s e2e -p 'test_*.py'
+
+      - name: Run read-only functional preflight
+        shell: bash
+        env:
+          MCAI_API_KEY: ${{ secrets.MCAI_API_KEY }}
+        run: |
+          python3 e2e/orchestrator.py preflight \
+            --forge-version "${{ inputs.forge_version }}" \
+            | tee functional-preflight.json
+
+      - name: Run exact-JAR real-client functional slice
+        timeout-minutes: 25
+        shell: bash
+        env:
+          MCAI_API_KEY: ${{ secrets.MCAI_API_KEY }}
+        run: |
+          set +e
+          python3 e2e/orchestrator.py functional \
+            --forge-version "${{ inputs.forge_version }}" \
+            --startup-timeout 240 \
+            --timeout 360
+          status=$?
+          set -e
+          printf '%s\n' "$status" > .mcai-functional-exit-code
+
+      - name: Write evidence summary
+        if: always()
+        shell: bash
+        run: |
+          python3 e2e/ci_evidence_summary.py \
+            --results e2e/results \
+            --step-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable functional evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcai-functional-${{ github.run_id }}-${{ github.run_attempt }}-forge-${{ inputs.forge_version }}
+          path: |
+            e2e/results
+            functional-preflight.json
+            forge-major-discovery.json
+            .mcai-functional-exit-code
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Enforce functional verdict
+        if: always()
+        shell: bash
+        run: |
+          if [[ ! -f .mcai-functional-exit-code ]]; then
+            echo "::error::Functional orchestrator did not record an exit code."
+            exit 1
+          fi
+          status="$(tr -d '[:space:]' < .mcai-functional-exit-code)"
+          if [[ "$status" != "0" ]]; then
+            echo "::error::Real-client functional E2E failed with exit $status."
+            exit "$status"
+          fi

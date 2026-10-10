@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_live_model_chat",
+  "function": "mcai_companion:real_player_chat_to_live_model",
+  "max_ticks": 600000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

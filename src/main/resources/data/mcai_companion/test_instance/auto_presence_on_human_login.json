@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_auto_presence",
+  "function": "mcai_companion:auto_presence_on_human_login",
+  "structure": "forge:empty48x32x48",
+  "max_ticks": 800,
+  "sky_access": true,
+  "padding": 8
+}

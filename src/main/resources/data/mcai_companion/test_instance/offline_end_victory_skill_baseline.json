@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_offline_end_victory_baseline",
+  "function": "mcai_companion:offline_end_victory_skill_baseline",
+  "max_ticks": 8000,
+  "structure": "forge:empty160x24x192",
+  "sky_access": true,
+  "padding": 8
+}

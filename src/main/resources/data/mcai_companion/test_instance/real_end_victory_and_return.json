@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_real_end_victory",
+  "function": "mcai_companion:real_end_victory_and_return",
+  "max_ticks": 8000,
+  "structure": "forge:empty160x24x192",
+  "sky_access": true,
+  "padding": 8
+}

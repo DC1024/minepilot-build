@@ -1,0 +1,7 @@
+2026-07-29 ADR-0001 ACCEPTED Forge 65 product remains bound to Minecraft 26.2 and Forge [65.0.0,66.0.0); Forge 66 requires a separate adapter/JAR.
+2026-07-29 ADR-0002 ACCEPTED Compile the Forge 65 product at API floor 65.0.0; runtime-test one frozen JAR on every officially released 65.x patch.
+2026-07-29 ADR-0003 ACCEPTED Existing GameTests are inner-loop contracts, not formal real-client E2E or milestone evidence.
+2026-07-29 ADR-0004 ACCEPTED Build a repository-owned Forge 65 ChatActor/Observer test client because HeadlessMC 26.2 support is not established.
+2026-07-29 ADR-0005 ACCEPTED Oracle code may arrange fixtures before the timer and score afterward, but cannot help the production AI after scenario start.
+2026-07-29 ADR-0006 ACCEPTED Dirty-worktree E2E runs are useful development evidence but always NON_RELEASE.
+

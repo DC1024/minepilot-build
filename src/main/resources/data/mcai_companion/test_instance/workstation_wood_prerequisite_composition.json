@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_workstation_wood_prerequisite_composition",
+  "function": "mcai_companion:workstation_wood_prerequisite_composition",
+  "max_ticks": 12000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_live_model_foundation_bootstrap",
+  "function": "mcai_companion:real_player_chat_to_live_model_wood_and_stone_tools",
+  "max_ticks": 240000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 12
+}

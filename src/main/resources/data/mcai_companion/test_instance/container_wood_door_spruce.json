@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_container_wood_door_spruce",
+  "function": "mcai_companion:container_wood_door_spruce",
+  "max_ticks": 6000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

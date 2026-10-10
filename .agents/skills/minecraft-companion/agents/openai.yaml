@@ -1,0 +1,4 @@
+interface:
+  display_name: "Minecraft Companion"
+  short_description: "Control the in-world AI companion through MCP"
+  default_prompt: "Use $minecraft-companion to observe Minecraft and set a safe high-level goal."

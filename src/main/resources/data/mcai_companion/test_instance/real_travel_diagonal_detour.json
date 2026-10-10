@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_real_travel_detour",
+  "function": "mcai_companion:real_travel_diagonal_detour",
+  "max_ticks": 5000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

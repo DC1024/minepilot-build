@@ -1,0 +1,7 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_headless_lifecycle",
+  "function": "mcai_companion:headless_player_lifecycle_state_and_fair_action",
+  "max_ticks": 12000,
+  "structure": "forge:empty160x24x192"
+}

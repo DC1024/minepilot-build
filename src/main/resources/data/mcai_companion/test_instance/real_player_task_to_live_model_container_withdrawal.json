@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_live_model_container_withdrawal",
+  "function": "mcai_companion:real_player_task_to_live_model_container_withdrawal",
+  "max_ticks": 600000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 12
+}

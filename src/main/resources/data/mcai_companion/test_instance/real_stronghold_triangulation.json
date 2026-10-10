@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_real_stronghold_triangulation",
+  "function": "mcai_companion:real_stronghold_triangulation",
+  "max_ticks": 8000,
+  "structure": "forge:empty600x24x600",
+  "sky_access": true,
+  "padding": 8
+}

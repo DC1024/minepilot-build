@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_roof_jump_placement",
+  "function": "mcai_companion:roof_jump_placement",
+  "max_ticks": 10000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

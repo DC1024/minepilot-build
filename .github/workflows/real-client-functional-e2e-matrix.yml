@@ -1,0 +1,45 @@
+name: Forge 65.x real-client functional matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: OpenAI-compatible HTTPS API base URL
+        required: true
+        type: string
+        default: https://token-plan-cn.xiaomimimo.com/v1
+      model_name:
+        description: Configured high-level model
+        required: true
+        type: string
+        default: mimo-v2.5
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    name: Forge ${{ matrix.forge_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        forge_version:
+          - 65.0.0
+          - 65.0.1
+          - 65.0.2
+          - 65.0.3
+          - 65.0.4
+          - 65.0.5
+          - 65.0.6
+          - 65.0.7
+          - 65.0.8
+          - 65.0.9
+          - 65.1.0
+          - 65.1.1
+    uses: ./.github/workflows/real-client-functional-e2e.yml
+    with:
+      forge_version: ${{ matrix.forge_version }}
+      base_url: ${{ inputs.base_url }}
+      model_name: ${{ inputs.model_name }}
+    secrets:
+      MCAI_API_KEY: ${{ secrets.MCAI_API_KEY }}

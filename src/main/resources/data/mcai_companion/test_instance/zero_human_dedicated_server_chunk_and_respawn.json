@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:function",
+  "environment": "mcai_companion:exclusive_zero_human_dedicated_server",
+  "function": "mcai_companion:zero_human_dedicated_server_chunk_and_respawn",
+  "max_ticks": 4000,
+  "structure": "forge:empty48x32x48",
+  "sky_access": true,
+  "padding": 8
+}

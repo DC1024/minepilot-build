@@ -1,0 +1,8 @@
+{
+  "type": "minecraft:function",
+  "environment": "minecraft:default",
+  "function": "mcai_companion:realtime_clock_contract",
+  "max_ticks": 320,
+  "structure": "forge:empty48x32x48",
+  "padding": 8
+}
