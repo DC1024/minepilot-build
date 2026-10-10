@@ -1,6 +1,7 @@
 package dev.mcai.companion.modelsetup;
 
 import dev.mcai.companion.CompanionConfig;
+import dev.mcai.companion.MinecraftAiCompanion;
 import dev.mcai.companion.agent.AgentAccentColor;
 import dev.mcai.companion.agent.AgentNameRules;
 import dev.mcai.companion.embodiment.AiPlayerManager;
@@ -110,14 +111,26 @@ public final class ModelSetupModule {
                 || AiProfileMarker.isMarked(player.getGameProfile())) {
                 return;
             }
-            final MinecraftServer server = player.level().getServer();
-            final CompanionWorldData data = CompanionWorldData.get(server);
-            data.rememberPlayerName(player.getGameProfile().name());
-            if (data.displayName().equalsIgnoreCase(
-                    player.getGameProfile().name()
-                )
-                && AiPlayerManager.onlinePlayer(server).isPresent()) {
-                AiPlayerManager.requestRemove(server);
+            // This listener runs inside PlayerList#placeNewPlayer, so anything
+            // it throws is caught by the vanilla spawn task and turned into
+            // "Couldn't place player in world" plus a disconnect. Never let a
+            // bookkeeping failure reject an otherwise valid human login.
+            try {
+                final MinecraftServer server = player.level().getServer();
+                final CompanionWorldData data = CompanionWorldData.get(server);
+                data.rememberPlayerName(player.getGameProfile().name());
+                if (data.displayName().equalsIgnoreCase(
+                        player.getGameProfile().name()
+                    )
+                    && AiPlayerManager.onlinePlayer(server).isPresent()) {
+                    AiPlayerManager.requestRemove(server);
+                }
+            } catch (final RuntimeException failure) {
+                MinecraftAiCompanion.LOGGER.warn(
+                    "Player-login bookkeeping failed for {}, login continues",
+                    player.getGameProfile().name(),
+                    failure
+                );
             }
         });
         ServerStoppedEvent.BUS.addListener(event -> {

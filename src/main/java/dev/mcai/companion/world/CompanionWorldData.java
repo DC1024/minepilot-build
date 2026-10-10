@@ -266,7 +266,18 @@ public final class CompanionWorldData extends SavedData {
     }
 
     public void rememberPlayerName(final String playerName) {
-        final String normalized = AgentNameRules.requireValid(playerName);
+        // Human profile names arrive from a launcher this mod does not
+        // control, so an off-rule name is simply not remembered. Throwing
+        // here propagated out of PlayerEvent.PlayerLoggedInEvent and aborted
+        // PlayerList#placeNewPlayer, which dropped the joining player with
+        // "Invalid player data". Skipping is harmless: the companion naming
+        // rules already reject every name this branch discards.
+        final AgentNameRules.Validation validation =
+            AgentNameRules.validateSyntax(playerName);
+        if (!validation.accepted()) {
+            return;
+        }
+        final String normalized = validation.normalized();
         final boolean alreadyKnown = knownPlayerNames.stream().anyMatch(
             existing -> existing.equalsIgnoreCase(normalized)
         );
