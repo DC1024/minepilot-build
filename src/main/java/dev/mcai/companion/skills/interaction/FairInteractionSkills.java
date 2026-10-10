@@ -92,15 +92,14 @@ public final class FairInteractionSkills {
             break_block: dimension, sampleSequence, x/y/z, face from one
             visibleBlockFaces entry.
             use_block: the same sampled face plus hand (main_hand or
-            off_hand). It only right-clicks with what that hand holds, so
-            equip_item a block into mainhand before placing. Aim at a
-            reachable face whose air neighbour is empty, never the cell
-            the companion stands in.
+            off_hand). It acts only on the face already under the
+            crosshair, so look_at that face first and equip_item the
+            block into mainhand. Target a reachable face with an empty
+            air neighbour, never the cell the companion stands in.
             attack_entity: dimension, sampleSequence, observationId; one
             in-reach hit. Use engage_observed_entity for a fight.
             interact_entity: dimension, sampleSequence, observationId,
             hand; non-attack crosshair interaction.
-            look_at aligns the crosshair first.
             use_item: dimension, hand, holdTicks 0-1200. Zero taps;
             positive holds then releases.
             consume_owned_food: dimension, itemId; equips and eats.
