@@ -252,6 +252,7 @@ public final class JdkProviderCapabilityProbe implements ProviderCapabilityProbe
     ) {
         ChatTokenField chatTokenField = initialChatTokenField;
         ReasoningControl reasoningControl = ReasoningControl.DISABLED;
+        ModelFailure lastFailure = null;
         for (OutputContract outputContract : OUTPUT_CONTRACT_PREFERENCE) {
             while (true) {
                 Attempt attempt = execute(
@@ -337,12 +338,24 @@ public final class JdkProviderCapabilityProbe implements ProviderCapabilityProbe
                     }
                     return ProtocolAttempt.failed(plainJson.failure());
                 }
-                return ProtocolAttempt.failed(failure);
+                /*
+                 * A provider may reject a contract in a shape this probe does
+                 * not recognise (for example a bare 400 whose message names
+                 * the capability in prose). Ending the whole probe there
+                 * strands a usable weaker contract, so remember the failure
+                 * and keep negotiating down the preference list. Only the
+                 * last remaining failure is reported.
+                 */
+                lastFailure = failure;
+                break;
             }
         }
-        throw new IllegalStateException(
-                "PLAIN_JSON has no optional output capability to reject"
-        );
+        if (lastFailure == null) {
+            throw new IllegalStateException(
+                    "PLAIN_JSON has no optional output capability to reject"
+            );
+        }
+        return ProtocolAttempt.failed(lastFailure);
     }
 
     private Attempt execute(
