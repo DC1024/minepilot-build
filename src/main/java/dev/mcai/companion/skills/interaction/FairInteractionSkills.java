@@ -92,7 +92,11 @@ public final class FairInteractionSkills {
             break_block requires dimension, sampleSequence, integer x/y/z,
             and face from one visibleBlockFaces entry.
             use_block requires the same sampled visible block face plus hand
-            (main_hand or off_hand). Precise ray hits stay local.
+            (main_hand or off_hand). Precise ray hits stay local. use_block
+            only right-clicks with whatever that hand already holds: to place
+            a block, first equip_item it into mainhand, then use_block with
+            hand=main_hand. Pick a face whose neighbouring air cell is empty
+            and within reach, never the cell the companion stands in.
             attack_entity: dimension,sampleSequence,current observationId;
             one in-reach hit only. Use engage_observed_entity for a fight.
             interact_entity: dimension,sampleSequence,observationId,hand;
