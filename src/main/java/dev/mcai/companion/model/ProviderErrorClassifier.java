@@ -181,6 +181,20 @@ public final class ProviderErrorClassifier {
                 || !hasExplicitUnsupportedWording(code, message)) {
             return Optional.empty();
         }
+        /*
+         * Providers often name the rejected capability in prose instead of the
+         * literal wire field: "does not support JSON schema output mode"
+         * never contains "json_schema", and mentionsField() additionally
+         * requires a non-identifier boundary, which fails once prose is
+         * normalised to underscores. Normalise case and separators and accept
+         * a plain substring hit here so the capability probe can still fall
+         * back to a weaker output contract instead of failing outright.
+         * Reaching this point already requires explicit unsupported wording.
+         */
+        String normalizedMessage = message
+                .toLowerCase(Locale.ROOT)
+                .replace(' ', '_')
+                .replace('-', '_');
         return capabilityFields.stream()
                 .map(field -> field.toLowerCase(Locale.ROOT))
                 .sorted(
@@ -190,11 +204,14 @@ public final class ProviderErrorClassifier {
                 )
                 .filter(field -> isSameOrDescendant(param, field)
                         || mentionsField(message, field)
+                        || normalizedMessage.contains(field)
                         || field.indexOf('.') >= 0
-                            && mentionsField(
+                            && (mentionsField(
                                 message,
                                 field.replace('.', '_')
-                            ))
+                            ) || normalizedMessage.contains(
+                                field.replace('.', '_')
+                            )))
                 .findFirst();
     }
 
