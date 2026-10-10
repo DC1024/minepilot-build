@@ -89,24 +89,23 @@ public final class FairInteractionSkills {
 
     public static String plannerGuide() {
         return """
-            break_block requires dimension, sampleSequence, integer x/y/z,
-            and face from one visibleBlockFaces entry.
-            use_block requires the same sampled visible block face plus hand
-            (main_hand or off_hand). Precise ray hits stay local. use_block
-            only right-clicks with whatever that hand already holds: to place
-            a block, first equip_item it into mainhand, then use_block with
-            hand=main_hand. Pick a face whose neighbouring air cell is empty
-            and within reach, never the cell the companion stands in.
-            attack_entity: dimension,sampleSequence,current observationId;
-            one in-reach hit only. Use engage_observed_entity for a fight.
-            interact_entity: dimension,sampleSequence,observationId,hand;
-            ordinary non-attack crosshair interaction with a visible entity.
-            look_at should align the crosshair first.
-            use_item requires dimension, hand, and holdTicks from 0 through
-            1200. Zero is a tap; positive values hold and then release.
-            consume_owned_food: dimension,itemId; equips, eats and verifies.
+            break_block: dimension, sampleSequence, x/y/z, face from one
+            visibleBlockFaces entry.
+            use_block: the same sampled face plus hand (main_hand or
+            off_hand). It only right-clicks with what that hand holds, so
+            equip_item a block into mainhand before placing. Aim at a
+            reachable face whose air neighbour is empty, never the cell
+            the companion stands in.
+            attack_entity: dimension, sampleSequence, observationId; one
+            in-reach hit. Use engage_observed_entity for a fight.
+            interact_entity: dimension, sampleSequence, observationId,
+            hand; non-attack crosshair interaction.
+            look_at aligns the crosshair first.
+            use_item: dimension, hand, holdTicks 0-1200. Zero taps;
+            positive holds then releases.
+            consume_owned_food: dimension, itemId; equips and eats.
             Every interaction is same-session, same-dimension, reach- and
-            line-of-sight checked through vanilla player actions.
+            line-of-sight checked.
             """;
     }
 }
