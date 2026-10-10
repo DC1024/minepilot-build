@@ -1199,6 +1199,21 @@ public final class BrainOrchestrator {
                 final String failureCode = result.failure()
                         .map(SkillFailure::code)
                         .orElse("skill_failed");
+                if (Boolean.getBoolean("mcai.liveModelTest")) {
+                    /*
+                     * SkillFailure.code is a closed local vocabulary with no
+                     * world text, player text, or provider payload, so it is
+                     * safe to surface behind the same explicit live-test flag
+                     * that already exposes rejected decisions. Without it a
+                     * repeating skill failure is indistinguishable from any
+                     * other and cannot be diagnosed in place.
+                     */
+                    MinecraftAiCompanion.LOGGER.info(
+                            "Live-model skill failed: skill={}, code={}",
+                            skill.skillName(),
+                            failureCode
+                    );
+                }
                 emitNotice(goal.revision(), failureCode);
                 recordSkillFailure(
                         skill.skillName(),
