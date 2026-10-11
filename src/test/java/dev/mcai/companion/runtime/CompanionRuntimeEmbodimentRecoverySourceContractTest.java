@@ -36,4 +36,39 @@ final class CompanionRuntimeEmbodimentRecoverySourceContractTest {
                 "Retry FAILED (not ABSENT)"
         ));
     }
+
+    /**
+     * The unattended path must mirror ensureSpawnNear(): requestSpawn()
+     * refuses a FAILED lifecycle with "failed_remove_first", so a recovery
+     * attempt that does not retire the failed session first can never be
+     * accepted and the world stays body-less until a human logs in.
+     */
+    @Test
+    void retiresTheFailedSessionBeforeRequestingAReplacement()
+            throws IOException {
+        final String source = Files.readString(Path.of(
+                "src/main/java/dev/mcai/companion/runtime/"
+                        + "CompanionRuntime.java"
+        ));
+
+        final int gate = source.indexOf("Retry FAILED (not ABSENT)");
+        final int retire = source.indexOf(
+                "AiPlayerManager.requestRemove(server);"
+        );
+        final int admit = source.indexOf(
+                "final AiPlayerManager.OperationResult respawn ="
+        );
+
+        assertTrue(gate >= 0, "the FAILED-only gate marker must survive");
+        assertTrue(
+                retire >= 0,
+                "unattended recovery must retire the failed session first"
+        );
+        assertTrue(admit >= 0);
+        assertTrue(
+                gate < retire && retire < admit,
+                "the failed session must be retired inside the FAILED-only "
+                        + "branch and before the replacement is requested"
+        );
+    }
 }

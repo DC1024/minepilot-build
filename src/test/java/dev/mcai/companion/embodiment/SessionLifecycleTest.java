@@ -41,6 +41,37 @@ class SessionLifecycleTest {
     }
 
     @Test
+    void failedSessionCanBeReplacedByAFreshBody() {
+        SessionLifecycle lifecycle = new SessionLifecycle();
+
+        lifecycle.beginSpawn();
+        lifecycle.activate();
+        lifecycle.fail("connection_closed");
+
+        assertEquals(SessionState.FAILED, lifecycle.state());
+        assertEquals("connection_closed", lifecycle.failureCode());
+
+        /*
+         * AiPlayerManager retires a failed session before it admits a
+         * replacement, so FAILED -> STOPPING -> ABSENT -> PREPARING -> ACTIVE
+         * has to be legal end to end.  beginStop() accepts FAILED explicitly
+         * for this path; without that edge an unattended world could never
+         * regain its body after a dropped connection.
+         */
+        lifecycle.beginStop();
+        lifecycle.stopped();
+
+        assertEquals(SessionState.ABSENT, lifecycle.state());
+        assertEquals("", lifecycle.failureCode());
+
+        lifecycle.beginSpawn();
+        lifecycle.activate();
+
+        assertEquals(SessionState.ACTIVE, lifecycle.state());
+        assertEquals("", lifecycle.failureCode());
+    }
+
+    @Test
     void hardcoreDeathRemainsTerminalUntilExplicitRemoval() {
         SessionLifecycle lifecycle = new SessionLifecycle();
 
