@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """拉取服务器本体配置现状：compose / server.properties / ops.json / whitelist.json / 容器 env。"""
 import sys, re
-sys.path.insert(0, r"C:/Users/15657.DC-PC/.workbuddy/ops")
+sys.path.insert(0, r"<OPS_DIR>")   # 本机 ops 工具目录
 from ssh_run import connect, run, close
 
-BASE = r"C:/Users/15657.DC-PC/WorkBuddy/2026-10-10-21-01-25"
-HOST, PORT, USER, PW = "192.168.43.102", 10000, "<NAS_USER>", "<NAS_PASSWORD>"
-COMPOSE = "/data_n002/data/udata/real/<NAS_USER>/Docker/minecraft"
+BASE = r"<WORKSPACE_DIR>"          # 本机工作区目录
+HOST, PORT, USER, PW = "<SERVER_IP>", 10000, "<NAS_USER>", "<NAS_PASSWORD>"
+COMPOSE = "<COMPOSE_DIR>"          # 远端 Docker Compose 项目目录
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 res = []
 c = None

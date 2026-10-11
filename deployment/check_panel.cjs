@@ -8,9 +8,9 @@ const R = fs, pw = process.env.LOCALAPPDATA + '\\ms-playwright';
 const N = R.readdirSync(pw).filter(d => /^chromium-\d+$/.test(d))
   .sort((a, b) => +b.split('-')[1] - +a.split('-')[1])[0];
 const EXE = pw + '\\' + N + '\\chrome-win64\\chrome.exe';
-const BASE = 'C:/Users/15657.DC-PC/WorkBuddy/2026-10-10-21-01-25';
+const BASE = '<WORKSPACE_DIR>';        // 本机工作区目录
 const TOKEN = fs.readFileSync(path.join(BASE, 'panel_token.txt'), 'utf8').trim();
-const URL = 'http://192.168.43.102:25800/';
+const URL = 'http://<SERVER_IP>:25800/';
 const SHOT = path.join(BASE, 'shots');
 if (!fs.existsSync(SHOT)) fs.mkdirSync(SHOT);
 

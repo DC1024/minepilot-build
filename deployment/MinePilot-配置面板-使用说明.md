@@ -9,11 +9,11 @@
 
 | 项 | 值 |
 |---|---|
-| 地址 | **http://192.168.43.102:25800** |
+| 地址 | **http://<SERVER_IP>:25800** |
 | 鉴权 | 需要令牌（`X-Panel-Token` 头或 `?token=`） |
-| 令牌 | 48 字符，本地存 `C:/Users/15657.DC-PC/WorkBuddy/2026-10-10-21-01-25/panel_token.txt` |
+| 令牌 | 48 字符，本地存 `panel_token.txt`（部署时随交付物提供） |
 | 容器 | `mcai-panel`（`node:22-alpine`，`restart: unless-stopped`） |
-| 部署目录 | `/data_n002/data/udata/real/<NAS_USER>/Docker/minecraft/` |
+| 部署目录 | `<COMPOSE_DIR>/`（Docker Compose 项目目录） |
 
 首次打开会看到令牌闸门（`#gate`），把 `panel_token.txt` 的内容粘进去即可。从此令牌记在浏览器本地，右上角有「退出」清除。
 
@@ -181,7 +181,7 @@ docker restart mcai-panel        # 只读挂载 + 直接读文件，Node 不热�
 
 ## 8. 无头浏览器验证结果（2026-10-11 05:07，全绿）
 
-`check_panel.cjs`（playwright-core 起 Chromium 访问 `http://192.168.43.102:25800/`），A~G 七段全 PASS、`ERRORS: none`：
+`check_panel.cjs`（playwright-core 起 Chromium 访问面板地址 `http://<SERVER_IP>:25800/`），A~G 七段全 PASS、`ERRORS: none`：
 
 - **A 基础**：令牌闸门自动通过、mc-server running/healthy、6 页签。
 - **B AI 配置**：模型地址 / 模型名已填充。

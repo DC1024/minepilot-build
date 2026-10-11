@@ -1,7 +1,7 @@
 # MinePilot「MCP 修好 + 目标下发却不执行」诊断报告
 
 **时间**：2026-10-11 01:00 ~ 03:15
-**环境**：z4pro `192.168.43.102` / Docker Compose 项目 `minecraft` / `mc-server` = Forge 26.2 + Forge 65.0.0 + Java 25
+**环境**：Docker Compose 项目 `minecraft` / `mc-server` = Forge 26.2 + Forge 65.0.0 + Java 25
 **结论**：MCP 已完全可用；「目标被接受却立刻转 SAFE_IDLE」的真根因是 **MinePilot 在 `JSON_OBJECT` 输出契约下从不把决策 schema 发给模型**。已修，并端到端跑通首个自主闭环。
 
 ---
