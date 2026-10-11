@@ -46,7 +46,9 @@ jobs:
       - name: Run unit tests
         id: tests
         continue-on-error: true
-        run: ./gradlew test --no-daemon --continue
+        run: |
+          ./gradlew test --no-daemon --continue
+          echo "passed=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload test report
         if: always()
@@ -58,9 +60,9 @@ jobs:
           retention-days: 30
 
       - name: Warn on failing tests
-        if: steps.tests.outcome == 'failure'
+        if: steps.tests.outputs.passed != 'true'
         run: |
-          echo "::warning::Unit tests failed. The jar was built but is NOT published to mcai-companion-latest."
+          echo "::warning::Unit tests did not pass. The jar was built but is NOT published to mcai-companion-latest."
 
       # 读取部署固定版本（deploy-target.txt），缺省 26.2 / 65.0.0
       - name: Read deploy-target.txt
@@ -146,11 +148,11 @@ jobs:
           PY
 
       - name: Prepare release asset (fixed name)
-        if: steps.compat.outputs.compatible == 'true' && steps.tests.outcome != 'failure'
+        if: steps.compat.outputs.compatible == 'true' && steps.tests.outputs.passed == 'true'
         run: cp build/libs/mcai_companion-*.jar mcai_companion.jar
 
       - name: Publish latest jar to Release
-        if: steps.compat.outputs.compatible == 'true' && steps.tests.outcome != 'failure'
+        if: steps.compat.outputs.compatible == 'true' && steps.tests.outputs.passed == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: mcai-companion-latest
