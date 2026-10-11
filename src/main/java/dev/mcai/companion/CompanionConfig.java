@@ -97,6 +97,33 @@ public final class CompanionConfig {
         .comment("Arm geometry for an automatically imported skin: CLASSIC or SLIM.")
         .define("skin.armType", "CLASSIC", CompanionConfig::isArmType);
 
+    /**
+     * Opt-in autonomous goal seeking. When enabled, the companion may propose
+     * its own objective while idle and no player/MCP goal is active. The
+     * proposal still travels through the ordinary goal coordinator and the
+     * fair, packet-level actuator, so it grants no extra authority.
+     */
+    public static final ForgeConfigSpec.BooleanValue AUTONOMY_ENABLED = BUILDER
+        .comment(
+            "Allow the companion to propose and pursue its own objectives",
+            "while idle and no player or MCP goal is active. Disabled by default."
+        )
+        .define("autonomy.enabled", false);
+
+    public static final ForgeConfigSpec.IntValue AUTONOMY_INTERVAL_SECONDS = BUILDER
+        .comment(
+            "Seconds between autonomous objective proposals while idle.",
+            "Clamped to at least 1 second and at most 600 seconds."
+        )
+        .defineInRange("autonomy.intervalSeconds", 45, 1, 600);
+
+    public static final ForgeConfigSpec.ConfigValue<String> AUTONOMY_GOAL_STYLE = BUILDER
+        .comment(
+            "Optional bias for autonomous objectives:",
+            "BALANCED, SURVIVAL, BUILD, or EXPLORE."
+        )
+        .define("autonomy.goalStyle", "BALANCED", CompanionConfig::isGoalStyle);
+
     public static final ForgeConfigSpec SPEC = BUILDER.build();
 
     private CompanionConfig() {
@@ -156,5 +183,16 @@ public final class CompanionConfig {
         } catch (IllegalArgumentException ignored) {
             return false;
         }
+    }
+
+    private static boolean isGoalStyle(final Object value) {
+        if (!(value instanceof String text)) {
+            return false;
+        }
+        final String normalized = text.trim().toUpperCase(java.util.Locale.ROOT);
+        return normalized.equals("BALANCED")
+            || normalized.equals("SURVIVAL")
+            || normalized.equals("BUILD")
+            || normalized.equals("EXPLORE");
     }
 }

@@ -177,6 +177,15 @@ public final class CompanionRuntime {
     }
     private static final AtomicReference<ServerRuntime> ACTIVE = new AtomicReference<>();
 
+    /**
+     * Drives opt-in autonomous goal seeking. All policy lives inside the
+     * driver; this runtime only forwards the per-tick clock and the shared
+     * server runtime so the driver can read the goal snapshot, the model
+     * gateway and the latest bounded observation.
+     */
+    private static final dev.mcai.companion.autonomy.AutonomyDriver AUTONOMY =
+        new dev.mcai.companion.autonomy.AutonomyDriver();
+
     private CompanionRuntime() {
     }
 
@@ -1173,6 +1182,22 @@ public final class CompanionRuntime {
             if (currentTick < runtimeRetryAfterTick) {
                 emergencyQuiesce = true;
                 return;
+            }
+            /*
+             * Opt-in autonomous objective seeking. Runs before the ordinary
+             * goal dispatch so an idle companion can acquire a goal; it is a
+             * no-op while a goal is running, while hardcore evaluation has
+             * locked external writes, while the feature is disabled, or while
+             * no verified provider is installed. Driver logic is exception
+             * isolated so an autonomy fault can never perturb the tick.
+             */
+            try {
+                AUTONOMY.tick(runtime, currentTick);
+            } catch (RuntimeException autonomyFailure) {
+                MinecraftAiCompanion.LOGGER.warn(
+                    "Companion autonomy probe failed; continuing tick",
+                    autonomyFailure
+                );
             }
             runtime.modelBootstrap().tick();
             goal = runtime.goals().snapshot();
