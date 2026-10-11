@@ -1,0 +1,5 @@
+# 部署(minepilot-panel) 当前固定的 MC / Forge 版本。
+# 上游同步后若模组升版，需同步修改本文件 + minepilot-panel/docker-compose.example.yml 的
+# VERSION / FORGE_VERSION，否则构建出的 jar 与运行服不兼容，发布会被 CI 闸门拦截。
+MC_VERSION=26.2
+FORGE_VERSION=65.0.0

@@ -41,11 +41,95 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # 发布到 GitHub Release，供 minepilot-panel 部署时稳定拉取最新 jar
+      # 读取部署固定版本（deploy-target.txt），缺省 26.2 / 65.0.0
+      - name: Read deploy-target.txt
+        id: read_target
+        run: |
+          if [ -f deploy-target.txt ]; then
+            echo "mc=$(grep '^MC_VERSION=' deploy-target.txt | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+            echo "forge=$(grep '^FORGE_VERSION=' deploy-target.txt | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---- 版本兼容闸门 ----
+      # 部署把 MC/Forge 版本写死在 docker-compose 里。若上游把模组支持版本从部署固定版本升走，
+      # 新 jar 与运行服不兼容 -> 【不发布】到 mcai-companion-latest（部署继续拉上一个兼容 jar）并仅告警。
+      - name: Check deploy-target compatibility
+        id: compat
+        env:
+          MC_EXP: ${{ steps.read_target.outputs.mc || '26.2' }}
+          FORGE_EXP: ${{ steps.read_target.outputs.forge || '65.0.0' }}
+        run: |
+          python3 - <<'PY'
+          import re, os
+
+          def vt(v):
+              # "26.2" -> (26, 2); tolerate non-numeric gracefully
+              out = []
+              for x in v.strip().split('.'):
+                  out.append(int(x) if x.isdigit() else 0)
+              return tuple(out)
+
+          def in_range(exp, rng):
+              # Forge-style versionRange: [26.2], [26.2,27), [26.2,), (26.1,26.3] or A||B
+              rng = rng.strip()
+              for part in rng.split('||'):
+                  part = part.strip()
+                  m = re.match(r'^([\[\(])(.*)([\]\)])$', part)
+                  if not m:
+                      if part == exp:
+                          return True
+                      continue
+                  lo_inc, body, hi_inc = (m.group(1) == '[', m.group(2), m.group(3) == ']')
+                  lo_s, _, hi_s = body.partition(',')
+                  lo_s, hi_s = lo_s.strip(), hi_s.strip()
+                  e = vt(exp)
+                  if lo_s:
+                      lo = vt(lo_s)
+                      if e < lo or (e == lo and not lo_inc):
+                          continue
+                  if hi_s:
+                      hi = vt(hi_s)
+                      if e > hi or (e == hi and not hi_inc):
+                          continue
+                  return True
+              return False
+
+          txt = open('src/main/resources/META-INF/mods.toml').read()
+          # split into mod header (parts[0]) + each [[dependencies.mcai_companion]] block
+          parts = re.split(r'\[\[dependencies\.mcai_companion\]\]', txt)
+          mc_rng = forge_rng = None
+          for b in parts[1:]:
+              if 'modId="minecraft"' in b:
+                  mm = re.search(r'versionRange="([^"]+)"', b)
+                  if mm:
+                      mc_rng = mm.group(1)
+              if 'modId="forge"' in b:
+                  fm = re.search(r'versionRange="([^"]+)"', b)
+                  if fm:
+                      forge_rng = fm.group(1)
+
+          mc_exp = os.environ.get('MC_EXP', '26.2')
+          forge_exp = os.environ.get('FORGE_EXP', '65.0.0')
+          print(f'mod minecraft range = {mc_rng}; deploy target MC = {mc_exp}')
+          print(f'mod forge range     = {forge_rng}; deploy target Forge = {forge_exp}')
+          ok_mc = bool(mc_rng) and in_range(mc_exp, mc_rng)
+          ok_forge = bool(forge_rng) and in_range(forge_exp, forge_rng)
+          ok = ok_mc and ok_forge
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'compatible={"true" if ok else "false"}\n')
+          if not ok:
+              print(f'::warning::Built mod targets MC range {mc_rng} / Forge range {forge_rng}, '
+                    f'but deployment is pinned to MC {mc_exp} / Forge {forge_exp}. '
+                    f'Skipping release publish. Update minepilot-panel compose VERSION/FORGE_VERSION '
+                    f'and minepilot-build/deploy-target.txt to match, then re-sync.')
+          PY
+
       - name: Prepare release asset (fixed name)
+        if: steps.compat.outputs.compatible == 'true'
         run: cp build/libs/mcai_companion-*.jar mcai_companion.jar
 
       - name: Publish latest jar to Release
+        if: steps.compat.outputs.compatible == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: mcai-companion-latest
