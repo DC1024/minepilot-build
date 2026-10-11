@@ -3,12 +3,15 @@ package dev.mcai.companion.skills.interaction;
 import dev.mcai.companion.action.ActionHand;
 import dev.mcai.companion.action.ActionOutcome;
 import dev.mcai.companion.action.AcceptedLowLevelAction;
+import dev.mcai.companion.action.ActionVec3;
 import dev.mcai.companion.action.BlockInteractionTarget;
 import dev.mcai.companion.action.FairPlayerActuator;
+import dev.mcai.companion.action.LookIntent;
 import dev.mcai.companion.embodiment.AiPlayerManager;
 import dev.mcai.companion.embodiment.SessionState;
 import dev.mcai.companion.navigation.GridPos;
 import dev.mcai.companion.progression.FoundationActionAudit;
+import dev.mcai.companion.skills.core.CoreSkillActuator;
 import dev.mcai.companion.waypoint.DimensionRef;
 import java.util.Objects;
 import java.util.Optional;
@@ -26,6 +29,7 @@ import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Server-thread production bridge from interaction skills to the fair player
@@ -35,6 +39,12 @@ import net.minecraft.world.item.Item;
  * the lifecycle generation, {@link ServerPlayer}, or connection object
  * changes. This prevents a skill created for a dead or disconnected body from
  * dispatching into its replacement.</p>
+ *
+ * <p>This port dispatches packets but never advances the body's action frame;
+ * the core-skill lane owns that tick. Turning therefore requires the core
+ * actuator as a look bridge: without it {@link #lookAt(ActionVec3)} reports
+ * {@code INVALID_PLAYER_STATE} and interaction skills keep their previous
+ * behaviour instead of assuming an aim that was never applied.</p>
  */
 public final class ServerOwnedInteractionSkillActuator
         implements InteractionSkillActuator {
@@ -45,6 +55,7 @@ public final class ServerOwnedInteractionSkillActuator
     private final Optional<FoundationActionAudit> foundationAudit;
     private final Consumer<AcceptedLowLevelAction> actionAudit;
     private final BlockBreakProtection blockBreakProtection;
+    private final CoreSkillActuator lookBridge;
 
     private ServerPlayer boundPlayer;
     private ServerGamePacketListenerImpl boundConnection;
@@ -61,7 +72,8 @@ public final class ServerOwnedInteractionSkillActuator
                 null,
                 ignored -> {
                 },
-                BlockBreakProtection.none()
+                BlockBreakProtection.none(),
+                null
         );
     }
 
@@ -76,7 +88,8 @@ public final class ServerOwnedInteractionSkillActuator
                 foundationAudit,
                 ignored -> {
                 },
-                BlockBreakProtection.none()
+                BlockBreakProtection.none(),
+                null
         );
     }
 
@@ -91,7 +104,8 @@ public final class ServerOwnedInteractionSkillActuator
                 expectedPlayerId,
                 foundationAudit,
                 actionAudit,
-                BlockBreakProtection.none()
+                BlockBreakProtection.none(),
+                null
         );
     }
 
@@ -101,6 +115,28 @@ public final class ServerOwnedInteractionSkillActuator
             final FoundationActionAudit foundationAudit,
             final Consumer<AcceptedLowLevelAction> actionAudit,
             final BlockBreakProtection blockBreakProtection
+    ) {
+        this(
+                server,
+                expectedPlayerId,
+                foundationAudit,
+                actionAudit,
+                blockBreakProtection,
+                null
+        );
+    }
+
+    /**
+     * Binds the core-skill lane as the look bridge so interaction skills can
+     * turn the body toward a target before dispatching against it.
+     */
+    public ServerOwnedInteractionSkillActuator(
+            final MinecraftServer server,
+            final UUID expectedPlayerId,
+            final FoundationActionAudit foundationAudit,
+            final Consumer<AcceptedLowLevelAction> actionAudit,
+            final BlockBreakProtection blockBreakProtection,
+            final CoreSkillActuator lookBridge
     ) {
         this.server = Objects.requireNonNull(server, "server");
         this.expectedPlayerId = Objects.requireNonNull(
@@ -116,6 +152,7 @@ public final class ServerOwnedInteractionSkillActuator
                 blockBreakProtection,
                 "blockBreakProtection"
         );
+        this.lookBridge = lookBridge;
     }
 
     @Override
@@ -209,6 +246,50 @@ public final class ServerOwnedInteractionSkillActuator
                 )
         );
         audit("use_on_block", outcome);
+        return outcome;
+    }
+
+    /**
+     * Turns the body toward one world point before an interaction is
+     * dispatched against it.
+     *
+     * <p>Every interaction revalidates that its target is genuinely under the
+     * crosshair, so a skill that dispatches without ever turning can only act
+     * on whatever the body already happened to face and reports every other
+     * legal target as {@code TARGET_OCCLUDED}. The turn is applied by the
+     * core action lane's fair actuator, which is the only driver whose
+     * movement/turn frame is advanced once per server tick, and which honours
+     * the ordinary per-tick rotation limit instead of snapping.</p>
+     */
+    @Override
+    public ActionOutcome lookAt(ActionVec3 point) {
+        Objects.requireNonNull(point, "point");
+        if (lookBridge == null) {
+            return ActionOutcome.INVALID_PLAYER_STATE;
+        }
+        if (!server.isSameThread()) {
+            return ActionOutcome.WRONG_THREAD;
+        }
+        final Optional<Binding> binding = resolve();
+        if (binding.isEmpty()) {
+            return ActionOutcome.PLAYER_UNAVAILABLE;
+        }
+        final Vec3 eye = binding.orElseThrow()
+                .player()
+                .getEyePosition();
+        final LookIntent look;
+        try {
+            look = LookIntent.toward(
+                    new ActionVec3(eye.x(), eye.y(), eye.z()),
+                    point
+            );
+        } catch (IllegalArgumentException degenerate) {
+            return ActionOutcome.INVALID_PLAYER_STATE;
+        }
+        final ActionOutcome outcome = safeAction(
+                () -> lookBridge.look(look)
+        );
+        audit("look_at", outcome);
         return outcome;
     }
 

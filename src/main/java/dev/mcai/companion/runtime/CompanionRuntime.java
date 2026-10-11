@@ -366,7 +366,15 @@ public final class CompanionRuntime {
                 worldData.companionUuid(),
                 foundationAudit,
                 actionTrace::record,
-                protectedStructures
+                protectedStructures,
+                /*
+                 * Interaction skills dispatch packets but never advance the
+                 * body's action frame, so they cannot turn the body on their
+                 * own. Binding the core lane lets them aim at an observed
+                 * face before dispatching, which is what an ordinary client
+                 * does and what the crosshair revalidation demands.
+                 */
+                coreActions
             );
         final ServerBoatSkillActuator boatActions =
             new ServerBoatSkillActuator(

@@ -1,6 +1,7 @@
 package dev.mcai.companion.skills.interaction;
 
 import dev.mcai.companion.action.ActionOutcome;
+import dev.mcai.companion.action.BlockInteractionTarget;
 import dev.mcai.companion.skill.Skill;
 import dev.mcai.companion.skill.SkillCheckpoint;
 import dev.mcai.companion.skill.SkillContext;
@@ -116,11 +117,26 @@ public final class UseBlockSkill implements Skill<UseBlockParameters> {
         if (target.failure().isPresent()) {
             return fail(target.failure().orElseThrow());
         }
+        BlockInteractionTarget resolved = target.target().orElseThrow();
+        /*
+         * Turn toward the observed hit point before dispatching.  The
+         * actuator independently revalidates that the target is genuinely
+         * under the crosshair, so a skill that never turns can only act on
+         * whatever the body already happened to face and reports every other
+         * legal target as TARGET_OCCLUDED.  Aiming is an intent: the fair
+         * actuator honours the per-tick rotation limit, so an occluded
+         * result is retried while the turn converges and only becomes a
+         * failure when the one-shot budget is exhausted.
+         */
+        boolean aiming = actuator.lookAt(resolved.hitPoint()).accepted();
         ActionOutcome outcome = actuator.useOnBlock(
                 parameters.hand(),
-                target.target().orElseThrow()
+                resolved
         );
         if (!outcome.accepted()) {
+            if (aiming && outcome == ActionOutcome.TARGET_OCCLUDED) {
+                return SkillTickResult.running(false, true);
+            }
             return fail(
                     InteractionSkillValidation.actionFailure(NAME, outcome)
             );

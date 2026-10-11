@@ -2,6 +2,7 @@ package dev.mcai.companion.skills.interaction;
 
 import dev.mcai.companion.action.ActionHand;
 import dev.mcai.companion.action.ActionOutcome;
+import dev.mcai.companion.action.ActionVec3;
 import dev.mcai.companion.action.BlockInteractionTarget;
 import java.util.OptionalDouble;
 import java.util.OptionalLong;
@@ -29,6 +30,20 @@ public interface InteractionSkillActuator {
             ActionHand hand,
             BlockInteractionTarget target
     );
+
+    /**
+     * Aims the bound body's crosshair at one world point taken from the
+     * current observation.
+     *
+     * <p>Interactions are only legal against a target that is genuinely under
+     * the crosshair, so a skill that never turns can reach only whatever the
+     * body already happened to face. Implementations that cannot drive the
+     * body's look return {@code INVALID_PLAYER_STATE}; a caller must then keep
+     * its previous behaviour instead of assuming the aim was applied.</p>
+     */
+    default ActionOutcome lookAt(ActionVec3 point) {
+        return ActionOutcome.INVALID_PLAYER_STATE;
+    }
 
     ActionOutcome attack(UUID entityId);
 

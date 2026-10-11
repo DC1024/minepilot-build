@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.mcai.companion.action.ActionHand;
+import dev.mcai.companion.action.ActionOutcome;
+import dev.mcai.companion.action.ActionVec3;
 import dev.mcai.companion.skill.SkillContext;
 import dev.mcai.companion.skill.SkillTickResult;
 import dev.mcai.companion.waypoint.DimensionRef;
@@ -283,6 +285,135 @@ final class OneShotInteractionSkillsTest {
                         .code()
         );
         assertTrue(actuator.blockTargets.isEmpty());
+    }
+
+    @Test
+    void useBlockAimsAtTheObservedHitPointBeforeDispatching()
+            throws Exception {
+        var frames = new InteractionSkillTestFixtures.MutableFrames(frame());
+        var actuator =
+                new InteractionSkillTestFixtures.RecordingActuator();
+        actuator.lookAtOutcome = ActionOutcome.QUEUED;
+        var skill = new UseBlockSkill(
+                PLAYER_ID,
+                actuator,
+                frames,
+                InteractionSkillPolicy.defaults()
+        );
+        var parameters = new UseBlockParameters(
+                DimensionRef.OVERWORLD,
+                OBSERVED_BLOCK,
+                ActionHand.MAIN_HAND
+        );
+
+        assertTrue(skill.preconditions(context(100), parameters).isEmpty());
+        skill.start(context(100), parameters);
+        assertEquals(
+                SkillTickResult.Status.COMPLETED,
+                skill.tick(context(101), parameters).status()
+        );
+        assertEquals(
+                java.util.List.of(new ActionVec3(1.0, 64.5, 0.5)),
+                actuator.aims
+        );
+        assertEquals(1, actuator.blockTargets.size());
+    }
+
+    @Test
+    void useBlockRetriesWhileTheTurnConvergesInsteadOfReportingOcclusion()
+            throws Exception {
+        var frames = new InteractionSkillTestFixtures.MutableFrames(frame());
+        var actuator =
+                new InteractionSkillTestFixtures.RecordingActuator();
+        actuator.lookAtOutcome = ActionOutcome.QUEUED;
+        actuator.useBlockOutcome = ActionOutcome.TARGET_OCCLUDED;
+        var skill = new UseBlockSkill(
+                PLAYER_ID,
+                actuator,
+                frames,
+                InteractionSkillPolicy.defaults()
+        );
+        var parameters = new UseBlockParameters(
+                DimensionRef.OVERWORLD,
+                OBSERVED_BLOCK,
+                ActionHand.MAIN_HAND
+        );
+
+        skill.start(context(100), parameters);
+        assertEquals(
+                SkillTickResult.Status.RUNNING,
+                skill.tick(context(101), parameters).status()
+        );
+        assertEquals(1, actuator.blockTargets.size());
+
+        actuator.useBlockOutcome = ActionOutcome.DISPATCHED;
+        assertEquals(
+                SkillTickResult.Status.COMPLETED,
+                skill.tick(context(102), parameters).status()
+        );
+        assertEquals(2, actuator.aims.size());
+        assertEquals(2, actuator.blockTargets.size());
+    }
+
+    @Test
+    void useBlockStillFailsImmediatelyWhenTheBodyCannotAim()
+            throws Exception {
+        var frames = new InteractionSkillTestFixtures.MutableFrames(frame());
+        var actuator =
+                new InteractionSkillTestFixtures.RecordingActuator();
+        actuator.useBlockOutcome = ActionOutcome.TARGET_OCCLUDED;
+        var skill = new UseBlockSkill(
+                PLAYER_ID,
+                actuator,
+                frames,
+                InteractionSkillPolicy.defaults()
+        );
+        var parameters = new UseBlockParameters(
+                DimensionRef.OVERWORLD,
+                OBSERVED_BLOCK,
+                ActionHand.MAIN_HAND
+        );
+
+        skill.start(context(100), parameters);
+        var result = skill.tick(context(101), parameters);
+        assertEquals(SkillTickResult.Status.FAILED, result.status());
+        assertEquals(
+                "use_block.action_target_occluded",
+                result.failure().orElseThrow().code()
+        );
+    }
+
+    @Test
+    void useBlockReportsTimeoutWhenTheTurnNeverReachesTheFace()
+            throws Exception {
+        var frames = new InteractionSkillTestFixtures.MutableFrames(frame());
+        var actuator =
+                new InteractionSkillTestFixtures.RecordingActuator();
+        actuator.lookAtOutcome = ActionOutcome.QUEUED;
+        actuator.useBlockOutcome = ActionOutcome.TARGET_OCCLUDED;
+        var skill = new UseBlockSkill(
+                PLAYER_ID,
+                actuator,
+                frames,
+                InteractionSkillPolicy.defaults()
+        );
+        var parameters = new UseBlockParameters(
+                DimensionRef.OVERWORLD,
+                OBSERVED_BLOCK,
+                ActionHand.MAIN_HAND
+        );
+
+        skill.start(context(100), parameters);
+        assertEquals(
+                SkillTickResult.Status.RUNNING,
+                skill.tick(context(119), parameters).status()
+        );
+        var result = skill.tick(context(120), parameters);
+        assertEquals(SkillTickResult.Status.FAILED, result.status());
+        assertEquals(
+                "use_block.timed_out",
+                result.failure().orElseThrow().code()
+        );
     }
 
     private static SkillContext context(long tick) {

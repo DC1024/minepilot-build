@@ -4,6 +4,7 @@ import dev.mcai.companion.action.ActionHand;
 import dev.mcai.companion.action.ActionOutcome;
 import dev.mcai.companion.action.BlockFace;
 import dev.mcai.companion.action.BlockInteractionTarget;
+import dev.mcai.companion.action.ActionVec3;
 import dev.mcai.companion.perception.BlockCoordinate;
 import dev.mcai.companion.perception.HeldItemSummary;
 import dev.mcai.companion.perception.PerceptionProvenance;
@@ -130,6 +131,7 @@ final class InteractionSkillTestFixtures {
                 new ArrayList<>();
         final List<BlockInteractionTarget> blockTargets =
                 new ArrayList<>();
+        final List<ActionVec3> aims = new ArrayList<>();
         final List<UUID> attacks = new ArrayList<>();
         final List<UUID> interactions = new ArrayList<>();
         final List<ActionHand> interactionHands = new ArrayList<>();
@@ -145,6 +147,13 @@ final class InteractionSkillTestFixtures {
         ActionOutcome beginMiningOutcome = ActionOutcome.IN_PROGRESS;
         ActionOutcome continueMiningOutcome = ActionOutcome.IN_PROGRESS;
         ActionOutcome useBlockOutcome = ActionOutcome.DISPATCHED;
+        /*
+         * Defaults to "this actuator cannot turn the body", which is what a
+         * bridge-less production binding reports. Interaction skills must
+         * then keep their previous behaviour instead of retrying forever on
+         * an aim that was never applied.
+         */
+        ActionOutcome lookAtOutcome = ActionOutcome.INVALID_PLAYER_STATE;
         ActionOutcome attackOutcome = ActionOutcome.DISPATCHED;
         ActionOutcome interactOutcome = ActionOutcome.DISPATCHED;
         ActionOutcome useItemOutcome = ActionOutcome.DISPATCHED;
@@ -187,6 +196,12 @@ final class InteractionSkillTestFixtures {
         ) {
             blockTargets.add(target);
             return useBlockOutcome;
+        }
+
+        @Override
+        public ActionOutcome lookAt(ActionVec3 point) {
+            aims.add(point);
+            return lookAtOutcome;
         }
 
         @Override
