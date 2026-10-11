@@ -45,9 +45,10 @@ public final class AutonomyDriver {
             return;
         }
         final GoalSnapshot goal = runtime.goals().snapshot();
-        if (goal.status() != GoalStatus.IDLE || goal.externalWritesLocked()) {
-            // A goal is already running, or a hardcore evaluation has locked
-            // external writes. Either way, the companion is not ours to direct.
+        if (!canTakeOver(goal)) {
+            // A goal is still being pursued (or is mid-cancel), or a hardcore
+            // evaluation has locked external writes. Either way the companion is
+            // not ours to direct right now.
             return;
         }
         final ModelGateway gateway = runtime.model().gateway();
@@ -80,6 +81,32 @@ public final class AutonomyDriver {
                 }
             }
         });
+    }
+
+    /**
+     * Whether the companion has no live owner and the driver may therefore
+     * propose an autonomous objective.
+     *
+     * <p>Only {@link GoalStatus#IDLE} used to qualify. That is wrong for every
+     * goal that reaches a terminal state: {@code COMPLETED}, {@code FAILED} and
+     * {@code SAFE_IDLE} describe a goal that is finished, not one that is still
+     * being pursued, and nothing in the goal machine ever moves them back to
+     * {@code IDLE}. The driver therefore probed exactly once (at server start,
+     * while the goal was still {@code IDLE}), then went permanently silent —
+     * after which the companion stood still forever, because autonomy is the
+     * only source of objectives when nobody is directing it.
+     *
+     * <p>{@link GoalStatus#RUNNING} still has an active owner, and
+     * {@link GoalStatus#CANCEL_PENDING} is mid-cancel, so both are excluded.
+     */
+    static boolean canTakeOver(final GoalSnapshot goal) {
+        if (goal.externalWritesLocked()) {
+            return false;
+        }
+        return switch (goal.status()) {
+            case IDLE, COMPLETED, FAILED, SAFE_IDLE -> true;
+            case RUNNING, CANCEL_PENDING -> false;
+        };
     }
 
     private static int clampInterval(final int requested) {
