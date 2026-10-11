@@ -29,6 +29,14 @@ public final class ConsumeOwnedFoodSkill
     public static final String NAME = "consume_owned_food";
     private static final long MAXIMUM_TICKS = 120;
     private static final long VERIFY_TICKS = 30;
+    /*
+     * A dispatched held-use needs a server round trip before it becomes an
+     * active use, and vanilla refuses ordinary food outright while the hunger
+     * bar is full. Wait long enough to tell those two apart, and re-dispatch
+     * once instead of trusting a single packet.
+     */
+    private static final long USE_REDISPATCH_TICK = 3L;
+    private static final long USE_START_GRACE_TICKS = 10L;
 
     private final UUID expectedPlayerId;
     private final InteractionSkillActuator actuator;
@@ -43,6 +51,7 @@ public final class ConsumeOwnedFoodSkill
     private long baselineObservation = -1;
     private int baselineCount;
     private boolean observedActiveUse;
+    private boolean useRedispatched;
 
     public ConsumeOwnedFoodSkill(
             final UUID expectedPlayerId,
@@ -106,6 +115,7 @@ public final class ConsumeOwnedFoodSkill
         baselineObservation = frame.observationRevision();
         baselineCount = count(frame, parameters.itemId());
         observedActiveUse = false;
+        useRedispatched = false;
         useStartedTick = -1;
         verifyStartedTick = -1;
     }
@@ -158,16 +168,27 @@ public final class ConsumeOwnedFoodSkill
             }
             if (use == ActionOutcome.NO_ACTIVE_ACTION
                     || use == ActionOutcome.COMPLETED) {
-                if (!observedActiveUse
-                        && context.gameTick() - useStartedTick <= 2L) {
+                if (observedActiveUse) {
+                    phase = Phase.VERIFYING;
+                    verifyStartedTick = context.gameTick();
                     return SkillTickResult.running(false, true);
                 }
-                if (!observedActiveUse) {
-                    return fail(NAME + ".use_not_started");
+                final long elapsed =
+                        context.gameTick() - useStartedTick;
+                if (!useRedispatched
+                        && elapsed >= USE_REDISPATCH_TICK) {
+                    final ActionOutcome retried =
+                            actuator.useItem(ActionHand.MAIN_HAND);
+                    useRedispatched = true;
+                    if (!retried.accepted()) {
+                        return fail(actionFailure("use", retried));
+                    }
+                    return SkillTickResult.running(true, true);
                 }
-                phase = Phase.VERIFYING;
-                verifyStartedTick = context.gameTick();
-                return SkillTickResult.running(false, true);
+                if (elapsed <= USE_START_GRACE_TICKS) {
+                    return SkillTickResult.running(false, true);
+                }
+                return fail(NAME + ".use_not_started");
             }
             return fail(actionFailure("continue", use));
         }

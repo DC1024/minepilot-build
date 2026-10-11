@@ -622,6 +622,16 @@ public final class MinecraftPlannerInputFactory implements PlannerInputFactory {
                 exactly from that list; never guess a version-specific recipe id.
                 """);
         }
+        if (available.contains("consume_owned_food")) {
+            guidance.append("""
+                consume_owned_food only works when the hunger bar is not
+                already full: vanilla refuses ordinary food at foodLevel 20,
+                so selecting it then wastes a decision and reports
+                consume_owned_food.use_not_started. Check foodLevel in the
+                semantic observation and only eat to restore hunger or to
+                heal while taking damage.
+                """);
+        }
         if (available.contains("equip_item")
                 && available.contains("use_block")) {
             guidance.append("""

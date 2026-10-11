@@ -55,9 +55,10 @@ final class InventorySkillParameters {
     static SkillParameterResult<CraftRecipeParameters> parseCraft(
             final List<SkillArgument> arguments
     ) {
-        final Map<String, String> values = exact(
+        final Map<String, String> values = requiredWithOptionalCount(
                 arguments,
-                Set.of("recipeId", "crafts")
+                "recipeId",
+                Set.of("crafts", "count")
         );
         if (values == null) {
             return SkillParameterResult.invalid("craft_recipe.invalid_arguments");
@@ -65,11 +66,51 @@ final class InventorySkillParameters {
         try {
             return SkillParameterResult.valid(new CraftRecipeParameters(
                     identifier(values.get("recipeId")),
-                    positiveBoundedInteger(values.get("crafts"))
+                    positiveBoundedInteger(
+                            values.getOrDefault("crafts", "1")
+                    )
             ));
         } catch (RuntimeException exception) {
             return SkillParameterResult.invalid("craft_recipe.invalid_arguments");
         }
+    }
+
+    /**
+     * Accepts one required argument plus at most one optional positive bound
+     * supplied under any of {@code aliases}, normalised to {@code crafts}.
+     *
+     * <p>Providers routinely name the craft count {@code count} and often omit
+     * it entirely when they mean "craft once". Requiring the exact pair made
+     * correct-intent decisions fail as {@code invalid_skill_arguments}.</p>
+     */
+    private static Map<String, String> requiredWithOptionalCount(
+            final List<SkillArgument> arguments,
+            final String required,
+            final Set<String> aliases
+    ) {
+        if (arguments == null || arguments.isEmpty()) {
+            return null;
+        }
+        final Map<String, String> values = new HashMap<>();
+        for (SkillArgument argument : arguments) {
+            if (argument == null) {
+                return null;
+            }
+            if (required.equals(argument.name())) {
+                if (values.putIfAbsent(required, argument.value())
+                        != null) {
+                    return null;
+                }
+            } else if (aliases.contains(argument.name())) {
+                if (values.putIfAbsent("crafts", argument.value())
+                        != null) {
+                    return null;
+                }
+            } else {
+                return null;
+            }
+        }
+        return values.containsKey(required) ? Map.copyOf(values) : null;
     }
 
     private static String identifier(final String value) {

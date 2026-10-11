@@ -78,6 +78,61 @@ final class ConsumeOwnedFoodSkillTest {
         );
     }
 
+    @Test
+    void aUseThatNeverStartsIsRedispatchedOnceBeforeFailing() {
+        final var frames =
+                new InteractionSkillTestFixtures.MutableFrames(
+                        frame(12, 1)
+                );
+        final var actuator =
+                new InteractionSkillTestFixtures.RecordingActuator();
+        /*
+         * Vanilla refuses ordinary food outright while the hunger bar is
+         * full, so no active use ever appears.
+         */
+        actuator.continueUsingOutcome = ActionOutcome.NO_ACTIVE_ACTION;
+        final var skill = new ConsumeOwnedFoodSkill(
+                PLAYER_ID,
+                actuator,
+                frames
+        );
+        final var parameters = new ConsumeOwnedFoodParameters(
+                DimensionRef.OVERWORLD,
+                "minecraft:golden_apple"
+        );
+
+        skill.start(context(100), parameters);
+        assertEquals(
+                SkillTickResult.Status.RUNNING,
+                skill.tick(context(101), parameters).status()
+        );
+        assertEquals(
+                SkillTickResult.Status.RUNNING,
+                skill.tick(context(102), parameters).status()
+        );
+        assertEquals(
+                List.of(ActionHand.MAIN_HAND),
+                actuator.itemUses,
+                "the first use is dispatched"
+        );
+        for (long tick = 103; tick <= 112; tick++) {
+            assertEquals(
+                    SkillTickResult.Status.RUNNING,
+                    skill.tick(context(tick), parameters).status(),
+                    "tick " + tick + " must stay inside the start grace"
+            );
+        }
+        assertEquals(
+                2,
+                actuator.itemUses.size(),
+                "a silent use is re-dispatched exactly once"
+        );
+        assertEquals(
+                SkillTickResult.Status.FAILED,
+                skill.tick(context(113), parameters).status()
+        );
+    }
+
     private static InteractionSkillFrame frame(
             final long observation,
             final int apples

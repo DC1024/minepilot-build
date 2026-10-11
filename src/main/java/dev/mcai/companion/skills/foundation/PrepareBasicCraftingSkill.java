@@ -120,6 +120,13 @@ public final class PrepareBasicCraftingSkill
     private GridPos supportMovementTarget;
     private final Set<GridPos> rejectedSupportStands = new HashSet<>();
     private int supportRepositions;
+    /*
+     * True once this run has observed an open 3x3 crafting menu, which is what
+     * registers the verified-foundation crafting-table evidence the
+     * BASIC_CRAFTING_READY milestone reads. Without it a body that owns a
+     * pickaxe but no crafting table could only ever report a hollow success.
+     */
+    private boolean craftingTableVerified;
 
     public PrepareBasicCraftingSkill(
             final UUID expectedPlayerId,
@@ -176,7 +183,7 @@ public final class PrepareBasicCraftingSkill
                     NAME + ".unsafe_pose"
             ));
         }
-        if (ownsPickaxe(frame)) {
+        if (ownsPickaxe(frame) && hasTable(frame)) {
             return Optional.empty();
         }
         final int required = requiredPlanks(frame);
@@ -220,6 +227,7 @@ public final class PrepareBasicCraftingSkill
         supportMovementTarget = null;
         rejectedSupportStands.clear();
         supportRepositions = 0;
+        craftingTableVerified = false;
     }
 
     @Override
@@ -269,6 +277,7 @@ public final class PrepareBasicCraftingSkill
                                 + "\"selfClearUpFaces\":%d,"
                                 + "\"rejectedSupports\":%d,"
                                 + "\"supportRepositions\":%d,"
+                                + "\"craftingTableVerified\":%s,"
                                 + "\"supportMovementTarget\":%s,"
                                 + "\"onGround\":%s,"
                                 + "\"bodyPosition\":%s,"
@@ -294,6 +303,7 @@ public final class PrepareBasicCraftingSkill
                         support.selfClearUpFaces(),
                         rejectedSupports.size(),
                         supportRepositions,
+                        craftingTableVerified,
                         gridJson(supportMovementTarget),
                         frame == null ? "null" : frame.onGround(),
                         frame == null
@@ -365,6 +375,7 @@ public final class PrepareBasicCraftingSkill
         }
         if (ownsPickaxe(frame)) {
             if (inventory.hasThreeByThreeCraftingMenu()) {
+                craftingTableVerified = true;
                 final InventoryOperationResult closed =
                         inventory.closeThreeByThreeCraftingMenu();
                 if (!closed.succeeded()) {
@@ -372,9 +383,17 @@ public final class PrepareBasicCraftingSkill
                 }
                 return SkillTickResult.running(true, true);
             }
-            core.stop();
-            phase = Phase.COMPLETED;
-            return SkillTickResult.completed();
+            if (craftingSetupReady(frame)) {
+                core.stop();
+                phase = Phase.COMPLETED;
+                return SkillTickResult.completed();
+            }
+            /*
+             * A pickaxe alone no longer counts as done. The route milestone
+             * also needs an owned crafting table or one this body opened, so
+             * fall through and do that work instead of reporting a one-tick
+             * success that the route can never verify.
+             */
         }
 
         return switch (phase) {
@@ -398,6 +417,26 @@ public final class PrepareBasicCraftingSkill
                     SkillTickResult.running(false, true);
             default -> fail(NAME + ".invalid_state");
         };
+    }
+
+    /**
+     * Mirrors the {@code BASIC_CRAFTING_READY} milestone exactly: a
+     * wooden-or-better pickaxe plus either an owned crafting table or one this
+     * body has actually opened through ordinary interaction.
+     */
+    private boolean craftingSetupReady(final CoreSkillFrame frame) {
+        return basicCraftingReady(frame, craftingTableVerified);
+    }
+
+    /**
+     * The milestone rule in one place, kept package-private so the regression
+     * test can assert that a lone pickaxe is no longer a completed setup.
+     */
+    static boolean basicCraftingReady(
+            final CoreSkillFrame frame,
+            final boolean tableOpened
+    ) {
+        return tableOpened || hasOwnedItem(frame, CRAFTING_TABLE);
     }
 
     private SkillTickResult prepareIngredients(
@@ -775,6 +814,7 @@ public final class PrepareBasicCraftingSkill
 
     private SkillTickResult confirmMenu(final SkillContext context) {
         if (inventory.hasThreeByThreeCraftingMenu()) {
+            craftingTableVerified = true;
             return transition(context, Phase.CRAFT_PICKAXE);
         }
         if (context.gameTick() - phaseStartedAtTick
@@ -1254,7 +1294,7 @@ public final class PrepareBasicCraftingSkill
     }
 
     private static int requiredPlanks(final CoreSkillFrame frame) {
-        int required = 3;
+        int required = ownsPickaxe(frame) ? 0 : 3;
         if (!hasTable(frame)) {
             required += 4;
         }
@@ -1345,7 +1385,7 @@ public final class PrepareBasicCraftingSkill
                 || visibleTable(frame).isPresent();
     }
 
-    private static boolean ownsPickaxe(final CoreSkillFrame frame) {
+    static boolean ownsPickaxe(final CoreSkillFrame frame) {
         return frame.inventory().stream().anyMatch(item ->
                 item.itemId().endsWith("_pickaxe")
                         && item.count() > 0

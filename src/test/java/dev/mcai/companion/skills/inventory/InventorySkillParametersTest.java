@@ -62,6 +62,37 @@ final class InventorySkillParametersTest {
     }
 
     @Test
+    void craftAcceptsAnOmittedOrAliasedCountAndStillFailsClosed() {
+        assertEquals(
+                1,
+                InventorySkillParameters.parseCraft(List.of(
+                        new SkillArgument(
+                                "recipeId",
+                                "minecraft:dark_oak_planks"
+                        )
+                )).value().orElseThrow().crafts(),
+                "an omitted count means craft once"
+        );
+        assertEquals(
+                4,
+                InventorySkillParameters.parseCraft(List.of(
+                        new SkillArgument(
+                                "recipeId",
+                                "minecraft:dark_oak_planks"
+                        ),
+                        new SkillArgument("count", "4")
+                )).value().orElseThrow().crafts(),
+                "providers routinely name the count 'count'"
+        );
+        assertFalse(InventorySkillParameters.parseCraft(List.of(
+                new SkillArgument("recipeId", "minecraft:oak_planks"),
+                new SkillArgument("targetBlockType", "minecraft:oak_log")
+        )).value().isPresent(), "unknown fields still fail closed");
+        assertFalse(InventorySkillParameters.parseCraft(List.of())
+                .value().isPresent(), "recipeId is still required");
+    }
+
+    @Test
     void duplicateArgumentNamesAreRejected() {
         assertFalse(InventorySkillParameters.parseCraft(List.of(
                 new SkillArgument("recipeId", "minecraft:stick"),

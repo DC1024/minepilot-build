@@ -63,6 +63,8 @@ final class KnownSkillArgumentCanonicalizerTest {
                 "prepare_basic_crafting",
                 "prepare_stone_tools",
                 "prepare_iron_toolkit",
+                "prepare_distributed_log_storage",
+                "gather_nearby_wood",
                 "establish_foundation_workstations",
                 "prepare_foundation_shelter_materials",
                 "secure_visible_food_reserve",

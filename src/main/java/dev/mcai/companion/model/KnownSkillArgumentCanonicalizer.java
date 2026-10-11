@@ -16,6 +16,8 @@ final class KnownSkillArgumentCanonicalizer {
             EXACT_PARAMETERLESS_COMPOUNDS = java.util.Set.of(
                     "prepare_basic_crafting",
                     "prepare_stone_tools",
+                    "prepare_distributed_log_storage",
+                    "gather_nearby_wood",
                     "prepare_iron_toolkit",
                     "prepare_container_wood_door",
                     "establish_foundation_workstations",
