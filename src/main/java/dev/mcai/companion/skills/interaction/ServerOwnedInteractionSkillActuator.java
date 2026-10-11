@@ -259,7 +259,8 @@ public final class ServerOwnedInteractionSkillActuator
      * legal target as {@code TARGET_OCCLUDED}. The turn is applied by the
      * core action lane's fair actuator, which is the only driver whose
      * movement/turn frame is advanced once per server tick, and which honours
-     * the ordinary per-tick rotation limit instead of snapping.</p>
+     * the ordinary per-tick rotation limit instead of snapping. Movement is
+     * released first so an interaction never walks the body.</p>
      */
     @Override
     public ActionOutcome lookAt(ActionVec3 point) {
@@ -285,6 +286,18 @@ public final class ServerOwnedInteractionSkillActuator
             );
         } catch (IllegalArgumentException degenerate) {
             return ActionOutcome.INVALID_PLAYER_STATE;
+        }
+        /*
+         * Standing still before turning matches the core look_at skill, and
+         * it is also a safety requirement here. Renewing the core lease
+         * suppresses the post-tick fail-safe quiesce, so without an explicit
+         * stop a movement intent left behind by the previous skill could keep
+         * driving the body for the whole interaction. Aiming must not walk.
+         */
+        final ActionOutcome stopped = safeAction(lookBridge::stop);
+        if (!stopped.accepted()) {
+            audit("look_at", stopped);
+            return stopped;
         }
         final ActionOutcome outcome = safeAction(
                 () -> lookBridge.look(look)
