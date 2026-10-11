@@ -21,6 +21,18 @@ import java.util.UUID;
 public final class UseBlockSkill implements Skill<UseBlockParameters> {
     private static final String NAME = "use_block";
 
+    /**
+     * Ticks allowed for the fair actuator to finish turning onto the target
+     * face before an occluded dispatch is reported as a real failure.
+     *
+     * <p>{@code ActionLimits.defaults()} caps yaw at 20 and pitch at 15
+     * degrees per tick, so the worst legal turn - 180 degrees of pitch - needs
+     * 12 ticks. Staying inside that bound keeps a genuinely unreachable face
+     * reporting the occlusion it actually saw, instead of waiting out the
+     * one-shot budget and blaming a timeout.</p>
+     */
+    private static final int AIM_CONVERGENCE_TICKS = 12;
+
     private final UUID expectedPlayerId;
     private final InteractionSkillActuator actuator;
     private final InteractionSkillFrameSource frames;
@@ -123,10 +135,17 @@ public final class UseBlockSkill implements Skill<UseBlockParameters> {
          * actuator independently revalidates that the target is genuinely
          * under the crosshair, so a skill that never turns can only act on
          * whatever the body already happened to face and reports every other
-         * legal target as TARGET_OCCLUDED.  Aiming is an intent: the fair
-         * actuator honours the per-tick rotation limit, so an occluded
-         * result is retried while the turn converges and only becomes a
-         * failure when the one-shot budget is exhausted.
+         * legal target as TARGET_OCCLUDED.
+         *
+         * The resolution above already proved that this exact face was hit by
+         * a real eye ray in both the authored and the current frame, so the
+         * face is reachable by construction; the only thing missing was the
+         * rotation.  Aiming is an intent, and the fair actuator honours the
+         * ordinary per-tick rotation limit, so the turn needs a few ticks.
+         * Retry inside a bounded convergence window instead of failing on the
+         * first tick, but report the original occlusion code once that window
+         * closes: an aim that never arrives is still an occlusion, and
+         * masking it as a timeout would hide the real cause.
          */
         boolean aiming = actuator.lookAt(resolved.hitPoint()).accepted();
         ActionOutcome outcome = actuator.useOnBlock(
@@ -134,8 +153,11 @@ public final class UseBlockSkill implements Skill<UseBlockParameters> {
                 resolved
         );
         if (!outcome.accepted()) {
-            if (aiming && outcome == ActionOutcome.TARGET_OCCLUDED) {
-                return SkillTickResult.running(false, true);
+            if (aiming
+                    && outcome == ActionOutcome.TARGET_OCCLUDED
+                    && context.gameTick() - startedAtGameTick
+                        < AIM_CONVERGENCE_TICKS) {
+                return SkillTickResult.running(true, true);
             }
             return fail(
                     InteractionSkillValidation.actionFailure(NAME, outcome)

@@ -384,7 +384,7 @@ final class OneShotInteractionSkillsTest {
     }
 
     @Test
-    void useBlockReportsTimeoutWhenTheTurnNeverReachesTheFace()
+    void useBlockReportsOcclusionOnceTheAimWindowCloses()
             throws Exception {
         var frames = new InteractionSkillTestFixtures.MutableFrames(frame());
         var actuator =
@@ -406,12 +406,12 @@ final class OneShotInteractionSkillsTest {
         skill.start(context(100), parameters);
         assertEquals(
                 SkillTickResult.Status.RUNNING,
-                skill.tick(context(119), parameters).status()
+                skill.tick(context(111), parameters).status()
         );
-        var result = skill.tick(context(120), parameters);
+        var result = skill.tick(context(112), parameters);
         assertEquals(SkillTickResult.Status.FAILED, result.status());
         assertEquals(
-                "use_block.timed_out",
+                "use_block.action_target_occluded",
                 result.failure().orElseThrow().code()
         );
     }
