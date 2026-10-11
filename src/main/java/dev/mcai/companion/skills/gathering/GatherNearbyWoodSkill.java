@@ -57,7 +57,13 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
     private static final int SEARCH_RADIUS = 48;
     private static final int SEARCH_STEP = 8;
     private static final int MAXIMUM_DESCENT_TICKS = 100;
-    private static final int MAXIMUM_GATHER_NO_PROGRESS_TICKS = 400;
+    /**
+     * Ticks without a single new wood item before the skill stops trusting the
+     * current phase. Applies in every phase (not just GATHERING/EXPLORING):
+     * a canopy that will not yield used to burn the whole MAXIMUM_TICKS budget
+     * with currentWood unchanged.
+     */
+    private static final int MAXIMUM_NO_PROGRESS_TICKS = 600;
     private static final float[] SCAN_YAW_OFFSETS = {
             0.0F, -45.0F, 45.0F, -90.0F,
             90.0F, -135.0F, 135.0F, 180.0F
@@ -207,6 +213,20 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                         context,
                         exploreParameters
                 ).payload());
+        /*
+         * Diagnostic only. BREAKING_CANOPY has no child checkpoint in the
+         * original payload, so a canopy stall was indistinguishable from any
+         * other stall in a persisted snapshot. Mirroring the breaker's own
+         * checkpoint makes the next such capture self-explanatory (phase,
+         * bound block, observation revision) without changing behaviour.
+         */
+        final String canopyCheckpoint = canopyBreaker == null
+                || canopyBreakParameters == null
+                ? ""
+                : escapeCheckpoint(canopyBreaker.checkpoint(
+                        context,
+                        canopyBreakParameters
+                ).payload());
         return new SkillCheckpoint(
                 1,
                 String.format(
@@ -215,7 +235,8 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                                 + "\"scanTurns\":%d,\"gatherFailures\":%d,"
                                 + "\"initialWood\":%d,\"currentWood\":%d,"
                                 + "\"gatherCheckpoint\":\"%s\","
-                                + "\"explorationCheckpoint\":\"%s\"}",
+                                + "\"explorationCheckpoint\":\"%s\","
+                                + "\"canopyCheckpoint\":\"%s\"}",
                         phase.name(),
                         Math.max(0L, context.gameTick() - startedAtTick),
                         scanTurns,
@@ -223,7 +244,8 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                         initialWoodCount,
                         frame == null ? -1 : woodCount(frame),
                         gatherCheckpoint,
-                        explorationCheckpoint
+                        explorationCheckpoint,
+                        canopyCheckpoint
                 )
         );
     }
@@ -270,15 +292,52 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
             lastProgressWoodCount = currentWoodCount;
             lastWoodProgressAtTick = context.gameTick();
         }
-        if (phase == Phase.GATHERING
-                && context.gameTick() - lastWoodProgressAtTick
-                    >= MAXIMUM_GATHER_NO_PROGRESS_TICKS) {
-            return recoverStalledGather(context, frame);
-        }
-        if (phase == Phase.EXPLORING
-                && context.gameTick() - lastWoodProgressAtTick
-                    >= MAXIMUM_GATHER_NO_PROGRESS_TICKS) {
-            return recoverStalledExploration(context, frame);
+        /*
+         * Phase-independent no-progress watchdog.
+         *
+         * The watchdog used to be gated on GATHERING or EXPLORING only, so a
+         * canopy that refused to yield monopolised the entire parent budget:
+         * a live capture showed phase=BREAKING_CANOPY with elapsedTicks=5999
+         * of MAXIMUM_TICKS=6000 and currentWood unchanged, while
+         * gatherFailures stayed 0 because BreakBlockSkill never reported
+         * FAILED (so no recovery path was ever reached). The companion simply
+         * stood on the leaves until the five-minute deadline, every time.
+         *
+         * lastWoodProgressAtTick is only reset by the recovery routines below
+         * and on real wood progress, never on an ordinary phase change, so
+         * budget burned across a phase cycle still counts as no progress.
+         * That is what bounds a hopeless objective: each recovery costs
+         * MAXIMUM_NO_PROGRESS_TICKS, and MAXIMUM_GATHER_FAILURES of them end
+         * the skill so the brain can choose something else instead of spending
+         * the full MAXIMUM_TICKS on a tree it cannot convert.
+         */
+        if (context.gameTick() - lastWoodProgressAtTick
+                >= MAXIMUM_NO_PROGRESS_TICKS) {
+            /*
+             * Every watchdog round counts as one failure, whichever phase it
+             * interrupted, so a companion that oscillates between exploring
+             * and scanning cannot reset its way out of the failure budget.
+             */
+            if (++gatherFailures >= MAXIMUM_GATHER_FAILURES) {
+                return fail(context, NAME + ".no_wood_collected");
+            }
+            if (phase == Phase.EXPLORING) {
+                return recoverStalledExploration(context, frame);
+            }
+            if (phase == Phase.GATHERING) {
+                return recoverStalledGather(context, frame);
+            }
+            /*
+             * Canopy and scan phases have no child cluster to abandon, but the
+             * stale canopy breaker (if any) must still be released so the next
+             * attempt binds to a fresh observation instead of a stale block.
+             */
+            cancelCanopyBreaker(context);
+            scanBaseYaw = yaw(frame.lookDirection());
+            nextScanTick = context.gameTick();
+            lastWoodProgressAtTick = context.gameTick();
+            phase = Phase.SCANNING;
+            return SkillTickResult.running(true, true);
         }
         return switch (phase) {
             case SCANNING -> scanOrBind(context, frame);
@@ -661,6 +720,19 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         lastWoodProgressAtTick = context.gameTick();
         phase = Phase.SCANNING;
         return SkillTickResult.running(true, true);
+    }
+
+    /**
+     * Release a bound canopy breaker without ending the parent skill, so the
+     * next scan binds to a fresh observation rather than a stale leaf block.
+     * Used by the phase-independent no-progress watchdog.
+     */
+    private void cancelCanopyBreaker(final SkillContext context) {
+        if (canopyBreaker != null && canopyBreakParameters != null) {
+            canopyBreaker.cancel(context, canopyBreakParameters);
+        }
+        canopyBreaker = null;
+        canopyBreakParameters = null;
     }
 
     private static String escapeCheckpoint(final String value) {
