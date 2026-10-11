@@ -35,7 +35,14 @@ public final class MinecraftPlannerInputFactory implements PlannerInputFactory {
     public static final int DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
     public static final int MAX_SYSTEM_PROMPT_CHARACTERS =
         PlannerInput.MAX_SYSTEM_PROMPT_CHARACTERS;
-    public static final int MAX_SKILL_GUIDE_CHARACTERS = 14_000;
+    /**
+     * Budget for the assembled skill guide alone. The hard ceiling is
+     * {@link #MAX_SYSTEM_PROMPT_CHARACTERS}: the static planner instruction
+     * is roughly 8 KB and the remaining inserts stay under 10 KB, so this
+     * budget leaves a wide margin inside that ceiling instead of sitting a
+     * few characters below it.
+     */
+    public static final int MAX_SKILL_GUIDE_CHARACTERS = 16_000;
     private static final Set<String> FOUNDATION_PHASE_SKILLS = Set.of(
             "prepare_basic_crafting",
             "prepare_stone_tools",
@@ -537,20 +544,44 @@ public final class MinecraftPlannerInputFactory implements PlannerInputFactory {
         );
     }
 
-    private static String boundedGuide(final String value) {
+    /**
+     * Keeps the skill guide inside its prompt budget. An oversized guide is a
+     * documentation regression, never a fatal server fault: the guide is
+     * trimmed back to the last complete line so the planner still receives a
+     * coherent contract instead of the server dying during startup. The NUL
+     * check stays fatal because an embedded NUL is a real invariant breach,
+     * not a size problem.
+     */
+    static String boundedGuide(final String value) {
         final String normalized = Objects.requireNonNullElse(value, "").strip();
-        if (normalized.length() > MAX_SKILL_GUIDE_CHARACTERS
-                || normalized.indexOf('\0') >= 0) {
+        if (normalized.indexOf('\0') >= 0) {
             throw new IllegalArgumentException(
-                    "skillGuide exceeds its bound: "
-                        + normalized.length()
-                        + " > "
-                        + MAX_SKILL_GUIDE_CHARACTERS
+                    "skillGuide contains a NUL character"
             );
         }
-        return normalized.isEmpty()
-            ? "No local skills are currently registered; choose SAFE_IDLE."
-            : normalized;
+        if (normalized.isEmpty()) {
+            return "No local skills are currently registered; choose SAFE_IDLE.";
+        }
+        if (normalized.length() <= MAX_SKILL_GUIDE_CHARACTERS) {
+            return normalized;
+        }
+        final int lastBreak = normalized.lastIndexOf(
+                '\n',
+                MAX_SKILL_GUIDE_CHARACTERS
+        );
+        final String trimmed = normalized.substring(
+                0,
+                lastBreak > 0 ? lastBreak : MAX_SKILL_GUIDE_CHARACTERS
+        ).stripTrailing();
+        MinecraftAiCompanion.LOGGER.warn(
+                "Planner skill guide was {} characters and exceeded the {} "
+                    + "character bound; it was trimmed to {} characters. "
+                    + "Shorten the registered planner guides.",
+                normalized.length(),
+                MAX_SKILL_GUIDE_CHARACTERS,
+                trimmed.length()
+        );
+        return trimmed;
     }
 
     /**

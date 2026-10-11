@@ -143,10 +143,9 @@ public final class CompanionRuntime {
         repeated line-of-sight samples; UUIDs and hidden positions stay local.
         equip_item requires itemId and slot (mainhand/offhand/head/chest/legs/
         feet). drop_item requires itemId and count [1,64].
-        craft_recipe requires recipeId and accepts an optional crafts
-        [1,64] (also accepted as count) meaning recipe executions; omitting
-        it crafts once. It uses unlocked auto-placeable recipes; 3x3 requires
-        an already-open reachable crafting-table menu.
+        craft_recipe requires recipeId; optional crafts [1,64] (alias
+        count) defaults to 1. It uses unlocked auto-placeable recipes;
+        3x3 requires an already-open reachable crafting-table menu.
         """
             + FairInteractionSkills.plannerGuide()
             + CombatSkills.plannerGuide()

@@ -41,6 +41,27 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # 之前 build 用了 -x test，导致单测从未执行：提示词长度越界等回归
+      # 只能等服务器启动崩溃才发现。这里单独跑一次，失败则不发布 jar。
+      - name: Run unit tests
+        id: tests
+        continue-on-error: true
+        run: ./gradlew test --no-daemon --continue
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-test-report
+          path: build/reports/tests/test
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Warn on failing tests
+        if: steps.tests.outcome == 'failure'
+        run: |
+          echo "::warning::Unit tests failed. The jar was built but is NOT published to mcai-companion-latest."
+
       # 读取部署固定版本（deploy-target.txt），缺省 26.2 / 65.0.0
       - name: Read deploy-target.txt
         id: read_target
@@ -125,11 +146,11 @@ jobs:
           PY
 
       - name: Prepare release asset (fixed name)
-        if: steps.compat.outputs.compatible == 'true'
+        if: steps.compat.outputs.compatible == 'true' && steps.tests.outcome != 'failure'
         run: cp build/libs/mcai_companion-*.jar mcai_companion.jar
 
       - name: Publish latest jar to Release
-        if: steps.compat.outputs.compatible == 'true'
+        if: steps.compat.outputs.compatible == 'true' && steps.tests.outcome != 'failure'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: mcai-companion-latest

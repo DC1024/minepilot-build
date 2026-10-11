@@ -3,6 +3,7 @@ package dev.mcai.companion.runtime;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.mcai.companion.brain.BrainObservation;
@@ -1424,6 +1425,36 @@ final class MinecraftPlannerInputFactoryTest {
                         trustedRuntime
                 )
         ));
+    }
+
+    @Test
+    void anOversizedSkillGuideIsTrimmedInsteadOfCrashingTheServer() {
+        final StringBuilder oversized = new StringBuilder();
+        while (oversized.length()
+                <= MinecraftPlannerInputFactory.MAX_SKILL_GUIDE_CHARACTERS) {
+            oversized.append("a complete line of planner guidance\n");
+        }
+        final String bounded = MinecraftPlannerInputFactory.boundedGuide(
+                oversized.toString()
+        );
+        assertTrue(
+                bounded.length()
+                        <= MinecraftPlannerInputFactory
+                            .MAX_SKILL_GUIDE_CHARACTERS,
+                () -> "trimmed guide length was " + bounded.length()
+        );
+        assertTrue(bounded.startsWith("a complete line"));
+        assertFalse(bounded.endsWith("\n"));
+    }
+
+    @Test
+    void anEmbeddedNulIsStillRejected() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> MinecraftPlannerInputFactory.boundedGuide(
+                        "guide\0with a nul"
+                )
+        );
     }
 
     @Test
