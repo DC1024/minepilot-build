@@ -90,6 +90,12 @@ public final class PrepareBasicCraftingSkill
      * descent can happen while the phase still has budget.
      */
     private static final int MINIMUM_SCANS_BEFORE_REPOSITION = 4;
+    /**
+     * Largest count published in a support refusal code. Keeps the assembled
+     * code inside the failure-code bound so the evidence survives instead of
+     * being replaced by the generic fallback token.
+     */
+    private static final int SUPPORT_COUNT_CODE_CEILING = 999;
     /*
      * Reposition search bounds. A stand must stay within ordinary walking
      * range, but it may sit below the body: a canopy perch has no legitimate
@@ -587,7 +593,9 @@ public final class PrepareBasicCraftingSkill
                     return reposition.orElseThrow();
                 }
             }
-            return fail(NAME + ".safe_support_not_visible");
+            return fail(
+                    NAME + ".sp" + supportShortfallCode(frame)
+            );
         }
         if (context.gameTick() < nextScanTick) {
             return SkillTickResult.running(false, true);
@@ -607,18 +615,15 @@ public final class PrepareBasicCraftingSkill
         supportScans++;
         nextScanTick = context.gameTick() + SCAN_INTERVAL_TICKS;
         /*
-         * A refused stand whose distance fails while a sturdy top face is in
-         * view cannot be fixed by turning: isReachableTableSupport bounds the
-         * table's own height to within one block of the feet, so a body
-         * perched above its ground has only unreachable faces no matter where
-         * it looks. Live evidence: at feet y=78 the body could see seven
-         * sturdy top faces while every one of them failed reachability, and
-         * sixteen scans left supportRepositions at zero.
-         *
-         * Reposition once the remaining scans cannot outnumber a descent, and
-         * let the body keep descending, so the phase spends its budget
-         * approaching ground instead of rotating through samples that the
-         * same geometry rejects every time.
+         * isReachableTableSupport bounds the table's own height to within one
+         * block of the feet, so a body perched above its ground can be
+         * refused by geometry rather than by viewing angle, and no amount of
+         * turning changes that. Reposition partway through the scan budget so
+         * a descent can happen while the phase still has time, instead of
+         * spending every scan on samples the same geometry rejects. The
+         * refusal code carries the per-filter counts, so the next live
+         * refusal states which constraint actually fired rather than leaving
+         * it to be inferred from an unrelated position.
          */
         if (supportScans >= Math.max(
                 MINIMUM_SCANS_BEFORE_REPOSITION,
@@ -630,6 +635,58 @@ public final class PrepareBasicCraftingSkill
         return SkillTickResult.running(true, true);
     }
 
+    /**
+     * Names the count chain of visible top faces so a live refusal can be
+     * diagnosed without another instrumentation round.
+     *
+     * <p>The checkpoint counters cannot serve this purpose: a terminal
+     * checkpoint overwrites the skill payload with the status and failure
+     * code, and the earlier short-circuit meant the only surviving counter
+     * rows came from completed runs at other positions. A refusal therefore
+     * left no record of which constraint actually fired, which is how a
+     * "cannot reach any face" reading taken from an unrelated position was
+     * mistaken for the live cause. Publishing the counts inside the failure
+     * code keeps the evidence attached to the event itself.</p>
+     *
+     * <p>Ordered as the filters run: v all visible faces, u up-facing,
+     * s sturdy top, r table-height reachable, e entity-volume clear, g within
+     * placement range, c self-clearance. A zero at step N with a non-zero
+     * step before it names the constraint that refused the stand.</p>
+     */
+    private static String supportShortfallCode(
+            final CoreSkillFrame frame
+    ) {
+        final SupportDiagnostics support = supportDiagnostics(
+                frame,
+                Set.of()
+        );
+        /*
+         * A failure code is bounded, and an over-long one is replaced by a
+         * generic token that would discard this evidence. Saturate instead:
+         * the thresholds these counts are read against are far below the cap,
+         * so a saturated value still answers which filter refused the stand.
+         */
+        return String.format(
+                Locale.ROOT,
+                ".v%d.u%d.s%d.r%d.e%d.g%d.c%d",
+                Math.min(support.visibleFaces(), SUPPORT_COUNT_CODE_CEILING),
+                Math.min(support.upFaces(), SUPPORT_COUNT_CODE_CEILING),
+                Math.min(support.sturdyUpFaces(), SUPPORT_COUNT_CODE_CEILING),
+                Math.min(support.reachableUpFaces(), SUPPORT_COUNT_CODE_CEILING),
+                Math.min(
+                        support.entityClearUpFaces(),
+                        SUPPORT_COUNT_CODE_CEILING
+                ),
+                Math.min(
+                        support.rangeClearUpFaces(),
+                        SUPPORT_COUNT_CODE_CEILING
+                ),
+                Math.min(
+                        support.selfClearUpFaces(),
+                        SUPPORT_COUNT_CODE_CEILING
+                )
+        );
+    }
     /**
      * Repositions the body under the table support search, spending one
      * descent allowance per call. Unlike the previous form this does not
