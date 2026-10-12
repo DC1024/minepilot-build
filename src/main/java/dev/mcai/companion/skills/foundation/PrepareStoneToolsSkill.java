@@ -78,22 +78,49 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     private static final double RELIABLE_TABLE_INTERACTION_DISTANCE = 3.75;
     private static final double TABLE_APPROACH_RADIUS = 3.0;
     /*
-     * Live telemetry (FIX9) showed a full 360-degree scan of this world's
-     * surface reporting visibleFaces=14 with stoneFaces=0, and an offline
-     * read of the region file confirmed why: the stone layer begins about
-     * five blocks below the grass, underneath mushroom blocks, leaf litter,
-     * grass and dirt.  No heading can ever expose it to a first-person ray,
-     * so completing the search by scanning alone is impossible here while an
-     * ordinary player simply digs straight down until stone appears.  Every
-     * descent block is still only ever acted on after the companion has
-     * genuinely looked at it, and the descent is bounded so a body standing
-     * on bedrock or over a shaft stops with a diagnostic instead of digging
-     * forever.
+     * Live telemetry (FIX9/FIX10) showed a full 360-degree scan of this
+     * world's surface reporting visibleFaces=24 with stoneFaces=0, and an
+     * offline read of the region file confirmed why: the stone layer begins
+     * about five blocks below the grass, underneath leaf litter, grass and
+     * dirt.  No heading can expose it to a first-person ray, so completing
+     * the search by scanning can never succeed here.
+     *
+     * The obvious fallback -- mine the block underfoot -- is refused by
+     * PlayerSupportBlockGuard, which returns WORLD_DENIED for the collision
+     * surface currently carrying the body.  That guard is a fairness
+     * property, not an obstacle to route around: its own contract says a
+     * skill that needs the block must first walk onto another observed
+     * support.  So the descent is a staircase, which is also what a careful
+     * player digs: mine down the neighbouring column, step into the shaft,
+     * and repeat.  Every block is still only ever acted on after the body
+     * has genuinely looked at it, and the descent is bounded so a body on
+     * bedrock or beside a shaft stops with a diagnostic.
+     *
+     * One step is exactly one block lower, and the neighbouring column is
+     * mined from its own top downwards until its topmost remaining block
+     * sits one below the body's feet.  Mining a fixed number of blocks
+     * instead does not work on level ground: the next column always starts
+     * at its original height, so a fixed two-block shaft stops descending
+     * after the first step.  The number of blocks per shaft therefore grows
+     * as the body sinks (one, then two, then three, ...), which is exactly
+     * how deep a straight stair is dug by hand.
      */
-    private static final int MAXIMUM_DIG_DOWN_BLOCKS = 24;
+    /*
+     * Offline replay of this world's column profile (surface at y=68, stone
+     * from y=63) settles in eleven mined blocks over four steps; a stone
+     * layer three blocks deeper needs twenty-six. The bound is set above
+     * that so the descent fails on an unexpected column rather than on a
+     * slightly deeper overburden, while still refusing to dig through a
+     * whole mountain.
+     */
+    static final int MAXIMUM_DIG_DOWN_BLOCKS = 48;
+    static final int MAXIMUM_STAIR_DROP = 3;
     private static final int MAXIMUM_DIG_AIM_TICKS = 40;
-    private static final float DIG_DOWN_PITCH = -90.0F;
+    private static final int MAXIMUM_STAIR_ENTRY_TICKS = 160;
+    static final double STAIR_REACH = 6.0;
+    private static final double STAIR_ARRIVAL_RADIUS = 0.35;
     private static final double DIG_SEED_CLUSTER_RADIUS = 1.0;
+    static final double STONE_BURST_RADIUS = 4.0;
     private static final String KEEP_CURRENT_HAND = "minecraft:air";
     /*
      * Fair perception already clips every block ray to 24 blocks. The
@@ -144,9 +171,12 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     private MoveToParameters tableMovementParameters;
     private boolean digGather;
     private int digDownBlocks;
-    private long digAimStartedAtTick = -1;
-    private long digAimObservationRevision = -1L;
-    private boolean awaitingDigAim;
+    private boolean stairDirectionChosen;
+    private int stairStepX;
+    private int stairStepZ;
+    private int stairColumnMined;
+    private MoveToSkill stairMovement;
+    private MoveToParameters stairMovementParameters;
 
     /*
      * Diagnostics only -- surfaced through checkpoint() so a failed
@@ -292,9 +322,12 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         tableMovementParameters = null;
         digGather = false;
         digDownBlocks = 0;
-        digAimStartedAtTick = -1L;
-        digAimObservationRevision = -1L;
-        awaitingDigAim = false;
+        stairDirectionChosen = false;
+        stairStepX = 0;
+        stairStepZ = 0;
+        stairColumnMined = 0;
+        stairMovement = null;
+        stairMovementParameters = null;
         beginScan(
                 context,
                 frame,
@@ -342,7 +375,11 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                                 + "\"visibleFaces\":%d,"
                                 + "\"stoneFaces\":%d,"
                                 + "\"stoneFacesKept\":%d,"
-                                + "\"tableFaces\":%d}",
+                                + "\"tableFaces\":%d,"
+                                + "\"digGather\":%s,"
+                                + "\"stairColumnMined\":%d,"
+                                + "\"stairStepX\":%d,"
+                                + "\"stairStepZ\":%d}",
                         phase.name(),
                         scanTurns,
                         Math.max(0L, context.gameTick() - startedAtTick),
@@ -351,7 +388,11 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                         diagnosticsVisibleFaces,
                         diagnosticsStoneFaces,
                         diagnosticsStoneFacesKept,
-                        diagnosticsTableFaces
+                        diagnosticsTableFaces,
+                        digGather,
+                        stairColumnMined,
+                        stairStepX,
+                        stairStepZ
                 )
         );
     }
@@ -366,6 +407,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
             gatherer.cancel(context, gatheringParameters);
         }
         cancelTableMovement(context);
+        cancelStairMovement(context);
         core.stop();
         closeCraftingMenuIfOpen();
         phase = Phase.CANCELLED;
@@ -402,7 +444,8 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         if (!frame.onGround()
                 && phase != Phase.GATHER_STONE
                 && phase != Phase.MOVE_TO_TABLE
-                && phase != Phase.DIG_DOWN) {
+                && phase != Phase.DIG_DOWN
+                && phase != Phase.ENTER_STAIR) {
             core.stop();
             return SkillTickResult.running(false, true);
         }
@@ -429,6 +472,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
             case FIND_TABLE -> findTable(context, frame);
             case MOVE_TO_TABLE -> moveToTable(context, frame);
             case DIG_DOWN -> digDown(context, frame);
+            case ENTER_STAIR -> enterStair(context, frame);
             case AIM_TABLE -> aimTable(context, frame);
             case OPEN_TABLE -> openTable(context);
             case CONFIRM_MENU -> confirmMenu(context);
@@ -517,7 +561,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                                 ),
                                 STONE,
                                 REQUIRED_COBBLESTONE,
-                                4.0,
+                                STONE_BURST_RADIUS,
                                 tool
                         );
                 final Optional<SkillFailure> rejected =
@@ -537,20 +581,20 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     }
 
     /**
-     * Enters the straight-down fallback after a full heading sweep found no
-     * naturally exposed stone.
+     * Arms the staircase after a full heading sweep found no naturally
+     * exposed stone.
      *
-     * <p>Nothing is mined here. This only arms the descent, and the next
-     * ticks turn the body's own view onto the block it is standing on so the
-     * face is a real first-person observation before any action is bound.</p>
+     * <p>Nothing is mined here. The descent direction is fixed once so the
+     * staircase keeps heading the same way, and the next ticks turn the
+     * body's own view onto the neighbouring column so the face is a real
+     * first-person observation before any action is bound.</p>
      */
     private SkillTickResult beginDigDown(final SkillContext context) {
-        digAimStartedAtTick = context.gameTick();
-        digAimObservationRevision = -1L;
-        awaitingDigAim = false;
-        phase = Phase.DIG_DOWN;
-        phaseStartedAtTick = context.gameTick();
-        return SkillTickResult.running(true, true);
+        stairDirectionChosen = false;
+        stairStepX = 0;
+        stairStepZ = 0;
+        stairColumnMined = 0;
+        return transition(context, Phase.DIG_DOWN);
     }
 
     private SkillTickResult digDown(
@@ -571,79 +615,284 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         }
         final InteractionSkillFrame interaction =
                 maybeInteraction.orElseThrow();
-        final BlockCoordinate support = supportBlockOf(frame);
-        final Optional<VisibleBlockFace> visibleSupport =
-                visibleFaceAt(
-                        interaction.visibleBlockFaces(),
-                        support
-                );
-        if (visibleSupport.isPresent()) {
-            return beginSupportDig(
+        final BlockCoordinate feet = feetOf(frame);
+        if (!stairDirectionChosen) {
+            chooseStairDirection(frame);
+        }
+        recordStoneSearchDiagnostics(
+                feet,
+                interaction.visibleBlockFaces()
+        );
+        /*
+         * The descent exists to expose stone, not to reach bedrock. The
+         * moment any genuinely observed stone face is on offer it is mined
+         * with the ordinary stone wiring, exactly as FIND_STONE would, so
+         * the staircase never walks past the layer it was digging towards.
+         * This fires as soon as the blocks above the stone have been removed
+         * from the step column, which happens several blocks before the
+         * body's own feet reach that depth.
+         */
+        final Optional<String> tool = selectMiningTool(frame);
+        final Optional<VisibleBlockFace> stone = selectNaturalStone(
+                feet,
+                interaction.visibleBlockFaces()
+        );
+        if (stone.isPresent() && tool.isPresent()) {
+            return beginDescentGather(
                     context,
                     interaction,
-                    visibleSupport.orElseThrow()
+                    stone.orElseThrow(),
+                    REQUIRED_COBBLESTONE,
+                    STONE_BURST_RADIUS,
+                    tool.orElseThrow()
             );
         }
-        if (awaitingDigAim
-                && frame.observationRevision()
-                    <= digAimObservationRevision) {
-            return SkillTickResult.running(false, true);
+        /*
+         * The shaft is open once the neighbouring column's topmost remaining
+         * block sits one below the body: stepping into it drops exactly one
+         * block, which is the shallowest step a stair can take and the only
+         * one that keeps the next column reachable from the new floor.
+         */
+        final int stepTop = feet.y() - 1;
+        final Optional<VisibleBlockFace> next = selectStairBlock(
+                feet,
+                stairStepX,
+                stairStepZ,
+                frame.eyePosition().y(),
+                interaction.visibleBlockFaces()
+        );
+        if (next.isPresent()) {
+            final VisibleBlockFace face = next.orElseThrow();
+            if (face.block().y() >= stepTop) {
+                return beginStairDig(
+                        context,
+                        frame,
+                        interaction,
+                        face
+                );
+            }
+            /*
+             * The column is already open below the step. A gap far deeper
+             * than one step is a ledge, not a stair: walking into it would
+             * be falling, and a Hardcore body does not fall into a hole on
+             * purpose. Stop with a diagnostic instead.
+             */
+            if (stepTop - face.block().y() > MAXIMUM_STAIR_DROP) {
+                return fail(NAME + ".stair_step_too_deep");
+            }
+            return beginStairEntry(context, frame);
         }
-        if (context.gameTick() - digAimStartedAtTick
+        /*
+         * Nothing left to see in the neighbouring column: it is open at
+         * least as deep as the step. A column that never offered a single
+         * block is not walked into blind, because that is a ledge, not a
+         * staircase.
+         */
+        if (stairColumnMined > 0) {
+            return beginStairEntry(context, frame);
+        }
+        if (context.gameTick() - phaseStartedAtTick
                 >= MAXIMUM_DIG_AIM_TICKS) {
-            return fail(NAME + ".dig_target_not_visible");
+            return fail(NAME + ".stair_column_empty");
         }
-        if (!core.stop().accepted()
-                || !core.look(new LookIntent(
-                        yaw(frame.lookDirection()),
-                        DIG_DOWN_PITCH
-                )).accepted()) {
-            return fail(NAME + ".dig_aim_rejected");
+        /*
+         * Steeply down at the middle of the next column's step block. The
+         * block rays span 100 by 70 degrees around the look direction, and
+         * the near ground one block ahead sits about 58 degrees below the
+         * eye, so a level aim would frame the horizon and leave the step
+         * column itself outside the vertical budget entirely. From here the
+         * fan still covers that column's top face and the side wall under
+         * it, which is everything the descent ever needs to mine.
+         */
+        return aimAt(
+                frame,
+                new PerceptionVec3(
+                        feet.x() + stairStepX + 0.5,
+                        feet.y() - 0.5,
+                        feet.z() + stairStepZ + 0.5
+                )
+        );
+    }
+
+    private void chooseStairDirection(final CoreSkillFrame frame) {
+        final double radians = Math.toRadians(yaw(frame.lookDirection()));
+        final double forwardX = -Math.sin(radians);
+        final double forwardZ = Math.cos(radians);
+        if (Math.abs(forwardX) >= Math.abs(forwardZ)) {
+            stairStepX = forwardX >= 0.0 ? 1 : -1;
+            stairStepZ = 0;
+        } else {
+            stairStepX = 0;
+            stairStepZ = forwardZ >= 0.0 ? 1 : -1;
         }
-        digAimObservationRevision = frame.observationRevision();
-        awaitingDigAim = true;
-        return SkillTickResult.running(true, true);
+        stairDirectionChosen = true;
     }
 
     /*
-     * One observation, one block. The seed carries the type the ray actually
-     * reported, so the descent never has to guess what the body is standing
-     * on, and keeping the current hand avoids a spurious tool swap for soil.
+     * Binds one genuinely observed face and hands it to the production
+     * cluster gatherer. The seed carries the type the ray actually reported,
+     * so nothing here ever guesses what it is digging, and the current hand
+     * is only kept when the caller has no better tool to offer.
+     *
+     * Everything mined during the descent is routed through the descent
+     * branch of gatherStone(), including stone, because the cobblestone
+     * count is re-read at the top of digDown: that keeps one integration
+     * point instead of two competing completion paths.
      */
-    private SkillTickResult beginSupportDig(
+    private SkillTickResult beginDescentGather(
             final SkillContext context,
             final InteractionSkillFrame interaction,
-            final VisibleBlockFace support
+            final VisibleBlockFace face,
+            final int maxBlocks,
+            final double clusterRadius,
+            final String toolItemId
     ) {
         gatheringParameters = new GatherVisibleBlockClusterParameters(
                 interaction.dimension(),
                 new ObservedBlockTarget(
                         interaction.observationRevision(),
-                        support.block().x(),
-                        support.block().y(),
-                        support.block().z(),
+                        face.block().x(),
+                        face.block().y(),
+                        face.block().z(),
                         BlockFace.valueOf(
-                                support.face().toUpperCase(Locale.ROOT)
+                                face.face().toUpperCase(Locale.ROOT)
                         )
                 ),
-                support.blockTypeId(),
-                1,
-                DIG_SEED_CLUSTER_RADIUS,
-                KEEP_CURRENT_HAND
+                face.blockTypeId(),
+                maxBlocks,
+                clusterRadius,
+                toolItemId
         );
         final Optional<SkillFailure> rejected = gatherer.preconditions(
                 context,
                 gatheringParameters
         );
         if (rejected.isPresent()) {
-            return fail(NAME + ".dig_block_rejected");
+            return fail(NAME + ".stair_block_rejected");
         }
         gatherer.start(context, gatheringParameters);
         digGather = true;
-        digDownBlocks++;
         phase = Phase.GATHER_STONE;
         phaseStartedAtTick = context.gameTick();
         return SkillTickResult.running(true, true);
+    }
+
+    /*
+     * One step, one block. The best available mining tool is equipped even
+     * for the soil and leaf litter above the stone, because the staircase is
+     * expected to reach the stone layer: a bare hand on stone yields no
+     * cobblestone and would make the whole descent pointless. Equipping one
+     * tool for every step is also cheaper than swapping back and forth
+     * between a shovel and a pickaxe.
+     */
+    private SkillTickResult beginStairDig(
+            final SkillContext context,
+            final CoreSkillFrame frame,
+            final InteractionSkillFrame interaction,
+            final VisibleBlockFace next
+    ) {
+        final SkillTickResult result = beginDescentGather(
+                context,
+                interaction,
+                next,
+                1,
+                DIG_SEED_CLUSTER_RADIUS,
+                selectMiningTool(frame).orElse(KEEP_CURRENT_HAND)
+        );
+        if (phase == Phase.GATHER_STONE) {
+            digDownBlocks++;
+            stairColumnMined++;
+        }
+        return result;
+    }
+
+    private void planStairEntry(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        cancelStairMovement(context);
+        final BlockCoordinate feet = feetOf(frame);
+        stairMovementParameters = new MoveToParameters(
+                frame.dimension(),
+                feet.x() + stairStepX + 0.5,
+                frame.position().y(),
+                feet.z() + stairStepZ + 0.5,
+                STAIR_ARRIVAL_RADIUS
+        );
+        stairMovement = new MoveToSkill(
+                expectedPlayerId,
+                core,
+                coreFrames
+        );
+        final Optional<SkillFailure> rejected =
+                stairMovement.preconditions(
+                        context,
+                        stairMovementParameters
+                );
+        if (rejected.isPresent()) {
+            stairMovement = null;
+            stairMovementParameters = null;
+            fail(NAME + ".stair_entry_rejected");
+            return;
+        }
+        stairMovement.start(context, stairMovementParameters);
+        stairColumnMined = 0;
+        phase = Phase.ENTER_STAIR;
+        phaseStartedAtTick = context.gameTick();
+    }
+
+    private SkillTickResult enterStair(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        if (stairMovement == null
+                || stairMovementParameters == null) {
+            return fail(NAME + ".stair_binding_missing");
+        }
+        if (context.gameTick() - phaseStartedAtTick
+                >= MAXIMUM_STAIR_ENTRY_TICKS) {
+            cancelStairMovement(context);
+            return fail(NAME + ".stair_entry_stalled");
+        }
+        final SkillTickResult movement = stairMovement.tick(
+                context,
+                stairMovementParameters
+        );
+        if (movement.status() == SkillTickResult.Status.FAILED) {
+            stairMovement = null;
+            stairMovementParameters = null;
+            return fail(NAME + ".stair_entry_failed");
+        }
+        if (movement.status() == SkillTickResult.Status.COMPLETED) {
+            stairMovement = null;
+            stairMovementParameters = null;
+            return transition(context, Phase.DIG_DOWN);
+        }
+        return SkillTickResult.running(
+                movement.madeProgress(),
+                movement.safeCheckpoint()
+        );
+    }
+
+    private SkillTickResult beginStairEntry(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        planStairEntry(context, frame);
+        if (phase != Phase.ENTER_STAIR) {
+            return SkillTickResult.failed(
+                    Objects.requireNonNull(failure)
+            );
+        }
+        return SkillTickResult.running(true, true);
+    }
+
+    private void cancelStairMovement(final SkillContext context) {
+        if (stairMovement != null && stairMovementParameters != null) {
+            stairMovement.cancel(context, stairMovementParameters);
+        }
+        stairMovement = null;
+        stairMovementParameters = null;
     }
 
     private SkillTickResult gatherStone(final SkillContext context) {
@@ -661,12 +910,12 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
             if (digGather) {
                 /*
                  * A descent block yields soil, not cobblestone, so it must
-                 * not enter the cobblestone confirmation window. Re-enter the
-                 * descent instead: it stops on its own once the ordinary
-                 * stone sweep or the cobblestone count is satisfied.
+                 * not enter the cobblestone confirmation window. Resume the
+                 * same staircase instead: it stops on its own once the
+                 * ordinary stone sweep or the cobblestone count is met.
                  */
                 digGather = false;
-                return beginDigDown(context);
+                return transition(context, Phase.DIG_DOWN);
             }
             phase = Phase.CONFIRM_COBBLESTONE;
             phaseStartedAtTick = context.gameTick();
@@ -1137,46 +1386,54 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     }
 
     /**
-     * The one block a body standing at this position rests on.
+     * The next descent block: the <em>highest</em> observed face in the
+     * neighbouring column that the body can still see.
+     *
+     * <p>Height first, distance only as a tie-break. A straight stair is
+     * dug from the top of the next column downwards, so the block that
+     * matters is always the topmost one still standing there; taking the
+     * nearest face instead would happily reach sideways into the middle of
+     * the column and leave the surface above it floating, which is
+     * un-walkable and therefore not a step at all.</p>
+     *
+     * <p>The body's own column is deliberately excluded. The block underfoot
+     * is the surface carrying the companion, and
+     * {@code PlayerSupportBlockGuard} refuses it at the action boundary; only
+     * a different observed support may be removed, which is what turns the
+     * descent into a staircase.</p>
+     *
+     * <p>The cut-off is the eye itself rather than the block containing the
+     * eye, because a body one block down a stair looks at the next column's
+     * surface almost level: that surface is in the same block layer as the
+     * eye's own position, and rejecting it would stall the descent with
+     * nothing left to mine.</p>
      */
-    static BlockCoordinate supportBlockAt(
-            final double x,
-            final double y,
-            final double z
+    static Optional<VisibleBlockFace> selectStairBlock(
+            final BlockCoordinate feet,
+            final int stepX,
+            final int stepZ,
+            final double eyeY,
+            final List<VisibleBlockFace> visibleBlockFaces
     ) {
-        return new BlockCoordinate(
-                (int) Math.floor(x),
-                (int) Math.floor(y) - 1,
-                (int) Math.floor(z)
-        );
-    }
-
-    private static BlockCoordinate supportBlockOf(final CoreSkillFrame frame) {
-        Objects.requireNonNull(frame, "frame");
-        return supportBlockAt(
-                frame.position().x(),
-                frame.position().y(),
-                frame.position().z()
-        );
-    }
-
-    /**
-     * The nearest retained observation of an exact coordinate, so a descent
-     * block can only ever be bound to a face the companion really saw.
-     */
-    static Optional<VisibleBlockFace> visibleFaceAt(
-            final List<VisibleBlockFace> visibleBlockFaces,
-            final BlockCoordinate block
-    ) {
+        Objects.requireNonNull(feet, "feet");
         Objects.requireNonNull(visibleBlockFaces, "visibleBlockFaces");
-        Objects.requireNonNull(block, "block");
+        if (stepX == 0 && stepZ == 0) {
+            return Optional.empty();
+        }
+        final int columnX = feet.x() + stepX;
+        final int columnZ = feet.z() + stepZ;
         return visibleBlockFaces.stream()
-                .filter(face -> face.block().x() == block.x()
-                        && face.block().y() == block.y()
-                        && face.block().z() == block.z())
-                .min(Comparator.comparingDouble(
-                        VisibleBlockFace::distance
-                ));
+                .filter(face -> face.block().x() == columnX
+                        && face.block().z() == columnZ)
+                .filter(face -> face.block().y() < eyeY)
+                .filter(face -> face.distance() <= STAIR_REACH)
+                .min(Comparator.comparingInt(
+                                (VisibleBlockFace face) ->
+                                        -face.block().y()
+                        )
+                        .thenComparingDouble(
+                                VisibleBlockFace::distance
+                        ));
     }
 
     private void recordStoneSearchDiagnostics(
@@ -1315,6 +1572,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         PREPARE_STICKS,
         FIND_STONE,
         DIG_DOWN,
+        ENTER_STAIR,
         GATHER_STONE,
         CONFIRM_COBBLESTONE,
         FIND_TABLE,

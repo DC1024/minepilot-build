@@ -104,58 +104,157 @@ final class PrepareStoneToolsSkillTest {
         assertEquals(other, selected.orElseThrow());
     }
 
+    /*
+     * The descent is a staircase, not a straight shaft. Live telemetry
+     * (FIX10) proved a straight shaft is impossible: the block underfoot is
+     * the collision surface carrying the body, and
+     * ServerOwnedInteractionSkillActuator refuses it with WORLD_DENIED via
+     * PlayerSupportBlockGuard. The guard's own contract says a skill that
+     * needs the block must first stand on a different observed support --
+     * so the neighbouring column is mined and the body steps into it.
+     */
+
     @Test
-    void resolvesTheBlockDirectlyUnderfootIncludingNegativeCoordinates() {
+    void selectsTheHighestObservedBlockInTheChosenStepColumn() {
         /*
-         * 线上实测位置 (7.906, 72.0, -21.13)：脚下方块应为 (7, 71, -22)。
-         * 负数坐标必须向下取整，否则往下一格会落在自己身上。
+         * 高度优先、距离只做次级排序：竖直楼梯必须从目标列“顶端”往下挖。
+         * 若按距离取最近，就会侧向挖到列中间，把上面的方块悬空 —— 那不是
+         * 台阶，走不进去。
          */
-        assertEquals(
-                new BlockCoordinate(7, 71, -22),
-                PrepareStoneToolsSkill.supportBlockAt(
-                        7.906,
-                        72.0,
-                        -21.13
-                )
-        );
-        assertEquals(
-                new BlockCoordinate(4, 62, 7),
-                PrepareStoneToolsSkill.supportBlockAt(4.0, 63.0, 7.0)
-        );
-    }
-
-    @Test
-    void bindsTheDescentTargetToTheExactObservedCoordinate() {
-        final VisibleBlockFace wanted = visibleStone(4, 62, 7, 1.2);
-        final VisibleBlockFace other = visibleStone(5, 62, 7, 1.4);
+        final VisibleBlockFace lowerButNearer =
+                visibleStone(5, 66, -18, 1.1);
+        final VisibleBlockFace upper = visibleStone(5, 67, -18, 3.2);
 
         assertEquals(
-                wanted,
-                PrepareStoneToolsSkill.visibleFaceAt(
-                        List.of(other, wanted),
-                        new BlockCoordinate(4, 62, 7)
+                upper,
+                PrepareStoneToolsSkill.selectStairBlock(
+                        new BlockCoordinate(5, 68, -17),
+                        0,
+                        -1,
+                        68.6,
+                        List.of(lowerButNearer, upper)
                 ).orElseThrow()
         );
     }
 
     @Test
-    void refusesToMineABlockThatWasNeverObserved() {
-        assertTrue(PrepareStoneToolsSkill.visibleFaceAt(
-                List.of(visibleStone(4, 62, 7, 1.2)),
-                new BlockCoordinate(4, 68, 7)
+    void stillSeesTheNextColumnAfterSteppingOneBlockDown() {
+        /*
+         * 已经站在 Y-1 这一级时，下一列的地表方块顶面正好与我的脚齐平，
+         * 它所在的方块层与“眼睛所在层”只差一层。用 floor(eyeY) 当阈值会
+         * 把它整列滤掉，楼梯随即卡死在 stair_column_empty。
+         */
+        final VisibleBlockFace nextSurface = visibleStone(5, 67, -19, 1.6);
+
+        assertEquals(
+                nextSurface,
+                PrepareStoneToolsSkill.selectStairBlock(
+                        new BlockCoordinate(5, 67, -18),
+                        0,
+                        -1,
+                        68.62,
+                        List.of(nextSurface)
+                ).orElseThrow()
+        );
+    }
+
+    @Test
+    void neverSelectsTheColumnDirectlyUnderfoot() {
+        final VisibleBlockFace support = visibleStone(5, 67, -17, 1.0);
+
+        assertTrue(PrepareStoneToolsSkill.selectStairBlock(
+                new BlockCoordinate(5, 68, -17),
+                0,
+                -1,
+                68.6,
+                List.of(support)
         ).isEmpty());
     }
 
     @Test
-    void prefersTheNearestObservedFaceOfTheDescentTarget() {
-        final VisibleBlockFace top = visibleStone(4, 62, 7, 1.2);
-        final VisibleBlockFace side = visibleStone(4, 62, 7, 3.4);
+    void ignoresObservedBlocksOutsideTheChosenStepColumn() {
+        final VisibleBlockFace otherColumn = visibleStone(6, 67, -18, 1.2);
+
+        assertTrue(PrepareStoneToolsSkill.selectStairBlock(
+                new BlockCoordinate(5, 68, -17),
+                0,
+                -1,
+                68.6,
+                List.of(otherColumn)
+        ).isEmpty());
+    }
+
+    @Test
+    void ignoresBlocksWhoseBaseIsAtOrAboveTheBodysOwnEye() {
+        final VisibleBlockFace aboveEye = visibleStone(5, 69, -18, 1.2);
+
+        assertTrue(PrepareStoneToolsSkill.selectStairBlock(
+                new BlockCoordinate(5, 68, -17),
+                0,
+                -1,
+                68.6,
+                List.of(aboveEye)
+        ).isEmpty());
+    }
+
+    @Test
+    void acceptsBlocksJustBelowTheEyeEvenInTheEyesOwnBlockLayer() {
+        final VisibleBlockFace levelWithFeet =
+                visibleStone(5, 68, -18, 1.2);
 
         assertEquals(
-                top,
-                PrepareStoneToolsSkill.visibleFaceAt(
-                        List.of(side, top),
-                        new BlockCoordinate(4, 62, 7)
+                levelWithFeet,
+                PrepareStoneToolsSkill.selectStairBlock(
+                        new BlockCoordinate(5, 68, -17),
+                        0,
+                        -1,
+                        68.6,
+                        List.of(levelWithFeet)
+                ).orElseThrow()
+        );
+    }
+
+    @Test
+    void refusesStairBlocksBeyondArmReach() {
+        final VisibleBlockFace tooFar = visibleStone(
+                5,
+                67,
+                -18,
+                PrepareStoneToolsSkill.STAIR_REACH + 0.01
+        );
+
+        assertTrue(PrepareStoneToolsSkill.selectStairBlock(
+                new BlockCoordinate(5, 68, -17),
+                0,
+                -1,
+                68.6,
+                List.of(tooFar)
+        ).isEmpty());
+    }
+
+    @Test
+    void returnsNothingUntilAStepDirectionHasBeenChosen() {
+        assertTrue(PrepareStoneToolsSkill.selectStairBlock(
+                new BlockCoordinate(5, 68, -17),
+                0,
+                0,
+                68.6,
+                List.of(visibleStone(5, 67, -18, 1.0))
+        ).isEmpty());
+    }
+
+    @Test
+    void handlesNegativeColumnsWhenSteppingTowardsNegativeZ() {
+        final VisibleBlockFace block = visibleStone(-6, 62, -22, 2.0);
+
+        assertEquals(
+                block,
+                PrepareStoneToolsSkill.selectStairBlock(
+                        new BlockCoordinate(-5, 63, -21),
+                        0,
+                        -1,
+                        63.6,
+                        List.of(block)
                 ).orElseThrow()
         );
     }
