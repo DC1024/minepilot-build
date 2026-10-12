@@ -70,7 +70,26 @@ public final class PrepareBasicCraftingSkill
     private static final int MAXIMUM_TABLE_CONFIRM_TICKS = 100;
     private static final int SCAN_INTERVAL_TICKS = 5;
     private static final int MAXIMUM_SUPPORT_SCANS = 16;
-    private static final int MAXIMUM_SUPPORT_REPOSITIONS = 3;
+    /*
+     * How many descent steps one phase may spend approaching a stand whose
+     * table height is reachable. The former value of three allowed a single
+     * three-block step, so a body several blocks inside a canopy could never
+     * arrive at its ground and ended the phase with no visible support. Each
+     * step is still a real move to an observed stand, so a body with nowhere
+     * to go fails out instead of spinning.
+     */
+    private static final int MAXIMUM_SUPPORT_REPOSITIONS = 12;
+    /*
+     * A refused stand whose distance fails while a sturdy top face is in
+     * view cannot be fixed by turning: isReachableTableSupport bounds the
+     * table's own height to within one block of the feet, so a body perched
+     * above its ground has only unreachable faces no matter where it looks.
+     * Live evidence: at feet y=78 the body could see seven sturdy top faces
+     * while every one of them failed reachability, and sixteen scans left
+     * supportRepositions at zero. Reposition after this many scans so a
+     * descent can happen while the phase still has budget.
+     */
+    private static final int MINIMUM_SCANS_BEFORE_REPOSITION = 4;
     /*
      * Reposition search bounds. A stand must stay within ordinary walking
      * range, but it may sit below the body: a canopy perch has no legitimate
@@ -139,6 +158,8 @@ public final class PrepareBasicCraftingSkill
     private GridPos supportMovementTarget;
     private final Set<GridPos> rejectedSupportStands = new HashSet<>();
     private int supportRepositions;
+    /** Guards against starting more than one reposition in the same game tick. */
+    private long supportRepositionStartedAtTick = -1L;
     /*
      * True once this run has observed an open 3x3 crafting menu, which is what
      * registers the verified-foundation crafting-table evidence the
@@ -246,6 +267,7 @@ public final class PrepareBasicCraftingSkill
         supportMovementTarget = null;
         rejectedSupportStands.clear();
         supportRepositions = 0;
+        supportRepositionStartedAtTick = -1L;
         craftingTableVerified = false;
     }
 
@@ -560,7 +582,7 @@ public final class PrepareBasicCraftingSkill
         if (supportScans >= MAXIMUM_SUPPORT_SCANS) {
             if (supportRepositions < MAXIMUM_SUPPORT_REPOSITIONS) {
                 final Optional<SkillTickResult> reposition =
-                        beginSupportReposition(context, frame);
+                        beginSupportRepositionSupport(context, frame);
                 if (reposition.isPresent()) {
                     return reposition.orElseThrow();
                 }
@@ -584,7 +606,56 @@ public final class PrepareBasicCraftingSkill
         }
         supportScans++;
         nextScanTick = context.gameTick() + SCAN_INTERVAL_TICKS;
+        /*
+         * A refused stand whose distance fails while a sturdy top face is in
+         * view cannot be fixed by turning: isReachableTableSupport bounds the
+         * table's own height to within one block of the feet, so a body
+         * perched above its ground has only unreachable faces no matter where
+         * it looks. Live evidence: at feet y=78 the body could see seven
+         * sturdy top faces while every one of them failed reachability, and
+         * sixteen scans left supportRepositions at zero.
+         *
+         * Reposition once the remaining scans cannot outnumber a descent, and
+         * let the body keep descending, so the phase spends its budget
+         * approaching ground instead of rotating through samples that the
+         * same geometry rejects every time.
+         */
+        if (supportScans >= Math.max(
+                MINIMUM_SCANS_BEFORE_REPOSITION,
+                MAXIMUM_SUPPORT_SCANS - MAXIMUM_SUPPORT_REPOSITIONS
+        )) {
+            return beginSupportRepositionSupport(context, frame)
+                    .orElseGet(() -> SkillTickResult.running(true, true));
+        }
         return SkillTickResult.running(true, true);
+    }
+
+    /**
+     * Repositions the body under the table support search, spending one
+     * descent allowance per call. Unlike the previous form this does not
+     * depend on the runner having already settled, so a body that must cross
+     * several blocks of canopy can descend again instead of ending the phase
+     * after a single three-block step.
+     */
+    private Optional<SkillTickResult> beginSupportRepositionSupport(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        if (supportRepositions >= MAXIMUM_SUPPORT_REPOSITIONS) {
+            return Optional.empty();
+        }
+        if (supportMovement != null
+                || supportRepositionStartedAtTick
+                    == context.gameTick()) {
+            return Optional.empty();
+        }
+        supportRepositionStartedAtTick = context.gameTick();
+        final Optional<SkillTickResult> reposition =
+                beginSupportReposition(context, frame);
+        if (reposition.isPresent()) {
+            supportScans = 0;
+        }
+        return reposition;
     }
 
     private Optional<SkillTickResult> beginSupportReposition(
