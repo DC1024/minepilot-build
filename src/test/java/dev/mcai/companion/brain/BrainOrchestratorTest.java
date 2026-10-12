@@ -2470,6 +2470,62 @@ class BrainOrchestratorTest {
     }
 
     @Test
+    void refusedSkillStartNamesTheRejectedSkillForTheNextPlannerRequest() {
+        try (Fixture fixture = new Fixture()) {
+            fixture.ironToolkitSkill.preconditionFailure =
+                    SkillFailure.of("stone_pickaxe_required");
+            fixture.startGoal();
+            fixture.brain.tick();
+
+            fixture.gateway.completeCurrent(success(
+                    fixture.gateway.lastInput(),
+                    DecisionKind.START_SKILL,
+                    "prepare_iron_toolkit",
+                    "",
+                    List.of()
+            ));
+            fixture.brain.tick();
+
+            /*
+             * The refusal has to reach the planner as an actionable pair: a
+             * bare reason such as stone_pickaxe_required names no subject, so
+             * a planner cannot tell which request to stop repeating. A live
+             * goal re-requested the same refused skill until the
+             * repeated-rejection terminal fired while the body stood still.
+             */
+            assertTrue(
+                    fixture.trustedRuntimeJsonSeen().stream().anyMatch(
+                            json -> {
+                                final var trusted = JsonParser
+                                        .parseString(json)
+                                        .getAsJsonObject();
+                                return trusted.has(
+                                            "lastSkillStartRejectionCode"
+                                        )
+                                        && trusted.get(
+                                            "lastSkillStartRejectionCode"
+                                        ).getAsString().equals(
+                                            "stone_pickaxe_required"
+                                        )
+                                        && trusted.has(
+                                            "lastSkillStartRejectedSkill"
+                                        )
+                                        && trusted.get(
+                                            "lastSkillStartRejectedSkill"
+                                        ).getAsString().equals(
+                                            "prepare_iron_toolkit"
+                                        );
+                            }
+                    ),
+                    "The planner must be told which skill was refused, "
+                            + "not only why: "
+                            + fixture.trustedRuntimeJsonSeen()
+            );
+            assertEquals(0, fixture.ironToolkitSkill.startCalls);
+        }
+    }
+
+    @Test
     void repeatedRateLimitsBackOffWithoutDiscardingThePlayerGoal() {
         try (Fixture fixture = new Fixture()) {
             fixture.startGoal();
@@ -2828,6 +2884,12 @@ class BrainOrchestratorTest {
         private final AtomicLong clock = new AtomicLong();
         private PlannerInputFactory inputFactory = this::validInput;
         private BrainOrchestrator brain;
+        private final List<String> plannerObservations = new ArrayList<>();
+
+        /** Trusted runtime JSON as handed to the planner, in request order. */
+        private List<String> trustedRuntimeJsonSeen() {
+            return List.copyOf(plannerObservations);
+        }
 
         private Fixture() {
             rebuildBrain();
@@ -2868,6 +2930,12 @@ class BrainOrchestratorTest {
                 dev.mcai.companion.control.GoalSnapshot goal,
                 BrainObservation observation
         ) {
+            /*
+             * The planner input factory is the last place that sees the
+             * enriched observation, so recording it here is how a test can
+             * assert on what the planner was actually told.
+             */
+            plannerObservations.add(observation.trustedRuntimeJson());
             return new PlannerInput(
                     new DecisionContext(
                             requestId,

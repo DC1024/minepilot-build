@@ -3126,10 +3126,18 @@ public final class BrainOrchestrator {
         }
 
         String requestId = "brain-" + goal.revision() + "-" + (++requestSequence);
+        /*
+         * Carry both the decision failure and, when the previous attempt was
+         * a refused skill start, the name of the skill that was refused. The
+         * planner prompt already instructs the model not to repeat a refused
+         * request; without the name it cannot satisfy the missing input
+         * either, because the refusal reason alone has no subject.
+         */
         final BrainObservation plannerObservation =
                 withPlannerCorrection(
                         observation,
-                        lastModelDecisionFailureCode
+                        lastModelDecisionFailureCode,
+                        lastRejectedSkillName
                 );
         final PlannerInput input;
         try {
@@ -3250,6 +3258,32 @@ public final class BrainOrchestrator {
             final BrainObservation observation,
             final String correctionCode
     ) {
+        return withPlannerCorrection(observation, correctionCode, "");
+    }
+
+    /**
+     * Attaches the local feedback the next planner request needs in order to
+     * stop repeating a request the server already refused.
+     *
+     * <p>The refusal code alone is not actionable: {@code
+     * stone_pickaxe_required} names a missing input without naming the skill
+     * that wanted it, so a planner can only guess. A live goal was observed
+     * re-requesting the same refused skill until the repeated-rejection
+     * terminal fired while the bot stood still. The refused skill name is
+     * therefore written next to the code, in the same trusted runtime channel
+     * the prompt already documents, so the planner can both see what was
+     * refused and satisfy the missing precondition first.</p>
+     *
+     * <p>Both fields stay string-typed and are only written when known, so
+     * existing readers of {@code lastSkillStartRejectionCode} keep working
+     * unchanged. This method only annotates trusted local facts; it never
+     * invents world state.</p>
+     */
+    static BrainObservation withPlannerCorrection(
+            final BrainObservation observation,
+            final String correctionCode,
+            final String rejectedSkillName
+    ) {
         Objects.requireNonNull(observation, "observation");
         final String normalized =
                 Objects.requireNonNullElse(
@@ -3267,6 +3301,36 @@ public final class BrainOrchestrator {
                     "lastModelDecisionFailureCode",
                     normalized
             );
+            final String refusedSkill =
+                    Objects.requireNonNullElse(
+                            rejectedSkillName,
+                            ""
+                    ).trim();
+            final String refusalCode = refusedSkillRefusalCode(
+                    normalized,
+                    refusedSkill
+            );
+            if (!refusalCode.isEmpty()) {
+                /*
+                 * Keep the established string field authoritative for the
+                 * code, and add the refused skill name beside it. The
+                 * observation provider may already have written the code;
+                 * overwriting it with this request's own verified pair is
+                 * what keeps the two fields describing the same refusal.
+                 */
+                trusted.addProperty(
+                        "lastSkillStartRejectionCode",
+                        refusalCode
+                );
+            }
+            if (!refusedSkill.isEmpty()) {
+                trusted.addProperty(
+                        "lastSkillStartRejectedSkill",
+                        refusedSkill
+                );
+            } else {
+                trusted.remove("lastSkillStartRejectedSkill");
+            }
             final String encoded = trusted.toString();
             if (encoded.length()
                     > BrainObservation
@@ -3282,6 +3346,43 @@ public final class BrainOrchestrator {
         } catch (RuntimeException invalidTrustedRuntime) {
             return observation;
         }
+    }
+
+    /**
+     * Extracts the reason of a refused skill start from a recorded decision
+     * failure code, but only when the code provably belongs to the skill that
+     * was refused.
+     *
+     * <p>A refused start is recorded as {@code NAME + "." + reason} (for
+     * example {@code prepare_iron_toolkit.stone_pickaxe_required}). The
+     * planner prompt documents the bare reason in {@code
+     * lastSkillStartRejectionCode}, so only that suffix is published there;
+     * the full code stays in {@code lastModelDecisionFailureCode}.</p>
+     *
+     * <p>Verifying the recorded name against the refused skill name keeps
+     * this correct without a hand-maintained allow-list that would silently
+     * rot as skills are added. Ordinary planner-envelope codes such as
+     * {@code planner_no_action}, {@code unknown_skill} or {@code
+     * invalid_skill_arguments} carry no matching skill prefix and therefore
+     * return empty, so the caller leaves the field untouched rather than
+     * telling the planner to abandon a skill it never requested.</p>
+     */
+    private static String refusedSkillRefusalCode(
+            final String failureCode,
+            final String refusedSkillName
+    ) {
+        if (failureCode == null
+                || failureCode.isEmpty()
+                || refusedSkillName == null
+                || refusedSkillName.isEmpty()) {
+            return "";
+        }
+        final String prefix = refusedSkillName + ".";
+        if (!failureCode.startsWith(prefix)
+                || failureCode.length() == prefix.length()) {
+            return "";
+        }
+        return failureCode.substring(prefix.length());
     }
 
     static String plannerCorrectionCode(
