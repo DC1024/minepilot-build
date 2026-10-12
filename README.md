@@ -2,7 +2,7 @@
 
 > This repository contains **only** the build source for the MinePilot / `mcai_companion` Forge mod.
 
-`mcai_companion` is a Minecraft Forge mod (Forge 26.2, mod id `mcai_companion`, licensed LGPL-3.0).
+`mcai_companion` is a Minecraft Forge mod (Forge 26.2, mod id `mcai_companion`). Project source and original assets are licensed under Apache-2.0; see LICENSE.
 This repo builds the mod jar. All non-build content (deployment, web control panel, docs, skills,
 end-to-end tests, planning/community docs) has been moved out to a separate repository.
 

@@ -45,7 +45,8 @@ jobs:
       # 只能等服务器启动崩溃才发现。这里单独跑一次并上传 JUnit 报告。
       # 注意：套件当前有 8 个历史失败（JdkProviderCapabilityProbeContractTest
       # / ProviderErrorClassifierTest / HiddenSeedEvaluationHarnessTest），
-      # 所以暂时只告警、不阻断发布；修完这批再把它改成发布闸门。
+      # 直接要求「全绿」会把每次发布都堵死（见提交 9836f2f），所以下面改为
+      # 基于 JUnit XML 的已知失败清单闸门：清单内的失败放行，清单外的一律阻断。
       - name: Run unit tests
         id: tests
         continue-on-error: true
@@ -62,8 +63,96 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # ---- 已知失败清单闸门 ----
+      # 解析 Gradle 的 JUnit XML，把失败按类名分成「清单内 / 清单外」两类：
+      #   清单外出现任何失败 -> gate=fail，阻断发布（::error:: 列出类名）
+      #   失败全在清单内     -> gate=pass，照常发布（::warning:: 说明还剩几个）
+      #   清单某项已不再失败 -> ::warning:: 提示删掉该条目，清单逐步收敛到空
+      #   一个 XML 都没找到 -> gate=fail（防止 gradle 静默没跑测试）
+      - name: Gate release on known test failures
+        id: gate
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, os, sys
+          import xml.etree.ElementTree as ET
+
+          # 已知失败清单（全限定类名；JUnit 里内部类写作 Foo$Bar，一并算同一条）
+          # 清单是欠账，不是豁免：修好一个就删一条，直到清空。
+          #   JdkProviderCapabilityProbeContractTest  19 个用例，回环服务器，超时类易 flaky
+          #   ProviderErrorClassifierTest             6 个用例，纯逻辑
+          # HiddenSeedEvaluationHarnessTest 原本缺 scripts/run-hidden-seed-evaluations.py，
+          # 该脚本已补上，故不再列入清单；若它再失败，应当真的把发布拦下来。
+          ALLOWLIST = (
+              'dev.mcai.companion.model.JdkProviderCapabilityProbeContractTest',
+              'dev.mcai.companion.model.ProviderErrorClassifierTest',
+          )
+
+          def in_allowlist(cls):
+              for a in ALLOWLIST:
+                  if cls == a or cls.startswith(a + '$'):
+                      return True
+              return False
+
+          # Gradle 默认把 JUnit XML 写到 build/test-results/test/，这里再递归兜底一次
+          files = sorted(glob.glob('build/test-results/test/*.xml'))
+          if not files:
+              files = sorted(glob.glob('build/test-results/**/*.xml', recursive=True))
+          files = [p for p in files if os.path.basename(p).startswith('TEST-')]
+
+          out_path = os.environ.get('GITHUB_OUTPUT')
+
+          def emit(**kv):
+              if out_path:
+                  with open(out_path, 'a') as f:
+                      for k, v in kv.items():
+                          f.write(f'{k}={v}\n')
+
+          if not files:
+              print('::error::build/test-results/ 下没有找到任何 TEST-*.xml —— 测试很可能根本没跑。按闸门失败处理，不发布。')
+              emit(ok='false', known='0', unknown='0')
+              sys.exit(1)
+
+          counts = {}
+          bad_xml = []
+          for path in files:
+              try:
+                  root = ET.parse(path).getroot()
+              except ET.ParseError as e:
+                  bad_xml.append(f'{path}: {e}')
+                  continue
+              for tc in root.iter('testcase'):
+                  if tc.find('failure') is None and tc.find('error') is None:
+                      continue
+                  counts[tc.get('classname') or ''] = counts.get(tc.get('classname') or '', 0) + 1
+
+          if bad_xml:
+              print('::error::无法解析 JUnit XML: ' + '; '.join(bad_xml) + '。按闸门失败处理，不发布。')
+              emit(ok='false', known='0', unknown='0')
+              sys.exit(1)
+
+          known = {c: n for c, n in counts.items() if in_allowlist(c)}
+          unknown = {c: n for c, n in counts.items() if not in_allowlist(c)}
+
+          def fmt(d):
+              return ', '.join(f'{c} ({n})' for c, n in sorted(d.items()))
+
+          if unknown:
+              print(f'::error::{sum(unknown.values())} 个测试失败落在已知失败清单之外，阻断发布: {fmt(unknown)}')
+              emit(ok='false', known=str(sum(known.values())), unknown=str(sum(unknown.values())))
+              sys.exit(1)
+
+          print(f'发布闸门通过：无清单外失败，剩余已知失败 {sum(known.values())} 个。')
+          if known:
+              print(f'::warning::{sum(known.values())} 个已知失败仍在清单内，本次照常发布: {fmt(known)}')
+          for a in ALLOWLIST:
+              if a not in known:
+                  print(f'::warning::已知失败清单里的 {a} 本次没有失败，可以把它从清单中移除（清单应逐步收敛到空）。')
+          emit(ok='true', known=str(sum(known.values())), unknown='0')
+          PY
+
       - name: Warn on failing tests
-        if: steps.tests.outputs.passed != 'true'
+        if: steps.gate.outputs.ok != 'true'
         run: |
           echo "::warning::Unit tests did not pass. The jar was built but is NOT published to mcai-companion-latest."
 
@@ -151,11 +240,11 @@ jobs:
           PY
 
       - name: Prepare release asset (fixed name)
-        if: steps.compat.outputs.compatible == 'true'
+        if: steps.compat.outputs.compatible == 'true' && steps.gate.outputs.ok == 'true'
         run: cp build/libs/mcai_companion-*.jar mcai_companion.jar
 
       - name: Publish latest jar to Release
-        if: steps.compat.outputs.compatible == 'true'
+        if: steps.compat.outputs.compatible == 'true' && steps.gate.outputs.ok == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: mcai-companion-latest
