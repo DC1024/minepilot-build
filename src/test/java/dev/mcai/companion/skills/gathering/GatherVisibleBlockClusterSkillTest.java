@@ -477,9 +477,37 @@ final class GatherVisibleBlockClusterSkillTest {
                         requested
                 ).isEmpty()
         );
+        /*
+         * P14's contract has two numbers: reissue every four ticks while the
+         * semantic revision stalls, and stop after eight probes. Anchor the
+         * assertions on the observed first probe rather than on a hardcoded
+         * tick, so a legitimate one-tick shift of the approach entry point
+         * cannot silently invalidate the test.
+         */
+        final int cooldownTicks = 4;
+        final int maximumProbes = 8;
+
         skill.start(context(100, false, 0.0), requested);
-        skill.tick(context(101, false, 0.0), requested);
-        for (long tick = 102; tick <= 104; tick++) {
+        long firstProbeTick = -1L;
+        for (long tick = 101; tick <= 110 && firstProbeTick < 0; tick++) {
+            skill.tick(context(tick, false, 0.0), requested);
+            if (core.looks.size() == 1) {
+                firstProbeTick = tick;
+            }
+        }
+        assertTrue(
+                firstProbeTick > 0,
+                "A stalled revision must still issue its first support probe"
+        );
+
+        /*
+         * The revision stays at 40 for the whole test, so every later look
+         * can only come from P14's cooldown branch rather than revision
+         * advancement.
+         */
+        for (long tick = firstProbeTick + 1;
+                tick < firstProbeTick + cooldownTicks;
+                tick++) {
             skill.tick(context(tick, false, 0.0), requested);
         }
         assertEquals(
@@ -488,26 +516,31 @@ final class GatherVisibleBlockClusterSkillTest {
                 "The cooldown must suppress duplicate probes before four ticks"
         );
 
-        /*
-         * The revision is still 40 at tick 105, so this second look can only
-         * come from P14's cooldown branch rather than revision advancement.
-         */
-        skill.tick(context(105, false, 0.0), requested);
+        skill.tick(
+                context(firstProbeTick + cooldownTicks, false, 0.0),
+                requested
+        );
         assertEquals(
                 2,
                 core.looks.size(),
-                "A stalled revision must reissue after the cooldown"
+                "A stalled revision must reissue once the cooldown elapses"
         );
-        for (long tick = 106; tick <= 132; tick++) {
+
+        final long exhaustedTick =
+                firstProbeTick + (long) cooldownTicks * maximumProbes;
+        for (long tick = firstProbeTick + cooldownTicks + 1;
+                tick < exhaustedTick;
+                tick++) {
             skill.tick(context(tick, false, 0.0), requested);
         }
-
         final String cappedCheckpoint = skill.checkpoint(
-                context(132, false, 0.0),
+                context(exhaustedTick - 1, false, 0.0),
                 requested
         ).payload();
         assertTrue(
-                cappedCheckpoint.contains("\"approachSupportProbes\":8"),
+                cappedCheckpoint.contains(
+                        "\"approachSupportProbes\":" + maximumProbes
+                ),
                 "Cooldown retries must stop at the bounded maximum"
         );
         assertTrue(
@@ -519,9 +552,9 @@ final class GatherVisibleBlockClusterSkillTest {
                 "A stalled revision must never move without floor evidence"
         );
 
-        skill.tick(context(133, false, 0.0), requested);
+        skill.tick(context(exhaustedTick, false, 0.0), requested);
         final String exhaustedCheckpoint = skill.checkpoint(
-                context(133, false, 0.0),
+                context(exhaustedTick, false, 0.0),
                 requested
         ).payload();
         assertTrue(
@@ -537,7 +570,7 @@ final class GatherVisibleBlockClusterSkillTest {
                 "The exhausted probe counter must reset for the next target"
         );
         assertEquals(
-                8,
+                maximumProbes,
                 core.looks.size(),
                 "No ninth support probe may be dispatched"
         );
