@@ -1381,6 +1381,16 @@ public final class PrepareBasicCraftingSkill
                  * SUPPORT_REPOSITION_DESCENT_WEIGHT blocks of walking keeps
                  * the nearest stand at a given depth winning, so the body
                  * leaves the canopy without stranding itself.
+                 *
+                 * The key is a cost and min() picks the cheapest, so descent
+                 * has to be a discount, not a surcharge. It was written as a
+                 * surcharge: at weight 2.0 a stand two blocks down scored
+                 * four extra blocks of walking, which no horizontal saving
+                 * inside the five-block bound could ever repay, so the
+                 * descent allowed by SUPPORT_REPOSITION_DESCENT_BLOCKS was
+                 * filtered in and then never elected. A canopy body kept
+                 * picking another stand in its own layer, exactly the
+                 * self-lock this code exists to break.
                  */
                 .min(Comparator
                         .comparingDouble((GridPos candidate) ->
@@ -1388,7 +1398,7 @@ public final class PrepareBasicCraftingSkill
                                     candidate.x() + 0.5 - current.x() - 0.5,
                                     candidate.z() + 0.5 - current.z() - 0.5
                                 )
-                                + (current.y() - candidate.y())
+                                - (current.y() - candidate.y())
                                     * SUPPORT_REPOSITION_DESCENT_WEIGHT)
                         .thenComparingInt(GridPos::y)
                         .thenComparingInt(GridPos::x)
