@@ -479,8 +479,7 @@ class SkillSupervisorTest {
             Duration.ofNanos(10_000),
             20,
             0.5,
-            0.2,
-            3
+            0.2
         );
 
         try (SkillSupervisor supervisor = supervisor(
