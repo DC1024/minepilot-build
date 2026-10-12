@@ -79,28 +79,39 @@ jobs:
 
           # 已知失败清单（全限定类名；JUnit 里内部类写作 Foo$Bar，一并算同一条）
           # 清单是欠账，不是豁免：修好一类就删一条，直到清空。
-          # 基线 12 个失败用例（2026-10-13 实测，1290 用例 / 12 失败），已销账 1 条：
-          #   JdkProviderCapabilityProbeContractTest  6 个，回环服务器；全是超时/deadline
-          #                                          类用例，随机器负载 flaky
-          #   ProviderErrorClassifierTest             1 个，语义分类断言过时
-          #   BrainOrchestratorTest                   1 个
-          #   CompanionRuntimeEmbodimentRecoverySourceContractTest  1 个
-          #   SkillSupervisorTest                     1 个
-          #   GatherVisibleBlockClusterSkillTest      1 个  <-- 见下方 REAL BUG
-          # 已销账：PrepareBasicCraftingSkillTest。它的树冠下探用例是个真 bug
-          # （下探权重在成本函数里被加成惩罚，降两格等于多走四格，永远选不上），
-          # 已修并同时移出清单；该类再失败就是新账，必须拦下来。
-          # 待办 REAL BUG：GatherVisibleBlockClusterSkillTest 的 1 个用例，尚未定位。
+          #
+          # 当前为空。基线是 12 个失败用例（2026-10-13：1290 用例 / 12 失败），
+          # 已全部销账，逐条来历如下：
+          #   JdkProviderCapabilityProbeContractTest  6 个。原以为是回环服务器
+          #       flaky，实测是确定值（expected 1 but was 4）。真因：P16 的
+          #       bfe8833 让"未识别拒绝"继续向下试探更弱契约时，没有区分失败
+          #       种类，于是终态失败（401/429/超时/断网）也把偏好表走完，多烧
+          #       3 倍配额。已改为只对 CAPABILITY_UNSUPPORTED 继续下探。
+          #   ProviderErrorClassifierTest             1 个。真因：新增的散文匹配
+          #       用裸子串，"unsupported context window" 里的 "text" 被误判为
+          #       被拒能力字段。已加词边界检查。
+          #   BrainOrchestratorTest                   1 个。测试自身两处缺陷：用
+          #       裸码而非真实技能产出的 "NAME.reason"，且未推进时钟越过退避，
+          #       导致下一次 planner 请求根本没发出。生产实现无 bug。
+          #   CompanionRuntimeEmbodimentRecoverySourceContractTest  1 个。真因：
+          #       P16 把 e446a4b 刚加的 requestRemove 连同注释一起删掉了，于是
+          #       requestSpawn 永远以 failed_remove_first 被拒，无人值守时 AI
+          #       永久死亡直到玩家登录。已恢复该调用。
+          #   SkillSupervisorTest                     1 个。真因：P16 新增的
+          #       dispatchTerminalCheckpoint 会用 supervisorTerminal 覆盖技能刚
+          #       完成时写下的最终 checkpoint，并盖上计数器从未到达的序号。已
+          #       改为仅对非完成结尾写 marker。
+          #   PrepareBasicCraftingSkillTest           1 个。真因：下探权重在成本
+          #       函数里被加成惩罚，降两格等于多走四格，永远选不上。
+          #   GatherVisibleBlockClusterSkillTest      1 个。断言未跟上 P14：探针
+          #       改为按 4 tick 冷却重发，20 tick 一个语义帧会发 6 次而非 1 次。
+          #
+          # 结论：P16（6e37fb2）一个提交同时造成其中 4 条（含一条编译错误），
+          # 而编译错误让整个测试源码编不过、所有测试都没跑，于是它们一起潜伏。
+          #
           # HiddenSeedEvaluationHarnessTest 原本缺 scripts/run-hidden-seed-evaluations.py，
           # 该脚本已补上，故不再列入清单；若它再失败，应当真的把发布拦下来。
-          ALLOWLIST = (
-              'dev.mcai.companion.model.JdkProviderCapabilityProbeContractTest',
-              'dev.mcai.companion.model.ProviderErrorClassifierTest',
-              'dev.mcai.companion.brain.BrainOrchestratorTest',
-              'dev.mcai.companion.runtime.CompanionRuntimeEmbodimentRecoverySourceContractTest',
-              'dev.mcai.companion.skill.SkillSupervisorTest',
-              'dev.mcai.companion.skills.gathering.GatherVisibleBlockClusterSkillTest',
-          )
+          ALLOWLIST = ()
 
           def in_allowlist(cls):
               for a in ALLOWLIST:
