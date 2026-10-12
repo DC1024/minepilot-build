@@ -814,7 +814,15 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                 gatheringParameters
         );
         if (rejected.isPresent()) {
-            return fail(NAME + ".stair_block_rejected");
+            /*
+             * Diagnostic propagation (P19): the cluster gatherer swallows the
+             * real cause into one of its own failure codes, so surface it here
+             * instead of collapsing everything into a bare "stair_block_rejected".
+             * The terminal code becomes e.g.
+             * "prepare_stone_tools.stair_block_rejected.danger_detected" while
+             * still containing the "stair_block_rejected" token for monitors.
+             */
+            return fail(stairBlockRejectedCode(rejected.get()));
         }
         gatherer.start(context, gatheringParameters);
         digGather = true;
@@ -1699,6 +1707,17 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                 .min(Comparator.comparingDouble(
                         VisibleBlockFace::distance
                 ));
+    }
+
+    /**
+     * P19 diagnostic helper: turns the cluster gatherer's swallowed rejection
+     * reason into a still-monitorable terminal code. The bare
+     * {@code stair_block_rejected} token is preserved so existing monitors keep
+     * matching, but the real sub-cause (e.g. {@code danger_detected}) is now
+     * visible in the failure code itself.
+     */
+    static String stairBlockRejectedCode(final SkillFailure cause) {
+        return NAME + ".stair_block_rejected." + cause.code();
     }
 
     private static boolean isCraftingTable(

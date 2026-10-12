@@ -7,6 +7,7 @@ import dev.mcai.companion.perception.BlockCoordinate;
 import dev.mcai.companion.perception.PerceptionProvenance;
 import dev.mcai.companion.perception.PerceptionVec3;
 import dev.mcai.companion.perception.VisibleBlockFace;
+import dev.mcai.companion.skill.SkillFailure;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -292,6 +293,26 @@ final class PrepareStoneToolsSkillTest {
                 new PerceptionVec3(x + 0.5, y + 0.5, z),
                 distance,
                 PerceptionProvenance.BLOCK_SURFACE_RAY_CLIP
+        );
+    }
+
+    /*
+     * P19: the descent precondition rejection must surface the cluster
+     * gatherer's real sub-cause instead of collapsing it into a bare
+     * "stair_block_rejected". The token is preserved so monitors still match.
+     */
+    @Test
+    void stairBlockRejectionCarriesTheGathererSubCause() {
+        assertEquals(
+                "prepare_stone_tools.stair_block_rejected.danger_detected",
+                PrepareStoneToolsSkill.stairBlockRejectedCode(
+                        SkillFailure.of("danger_detected")
+                )
+        );
+        assertTrue(
+                PrepareStoneToolsSkill.stairBlockRejectedCode(
+                        SkillFailure.of("seed_not_visible")
+                ).contains("stair_block_rejected")
         );
     }
 }
