@@ -82,6 +82,23 @@ public final class GatherVisibleBlockClusterSkill
             {0, 1},
             {0, -1}
     };
+    /*
+     * Diagnostic captured the last time safeStep() came back empty, i.e. the
+     * last time the body refused to take a step toward a visible target.
+     * Each of the four cardinal directions is classified by which gate stopped
+     * it:
+     *   blkBody / blkHead - the adjacent cell is a known, impassable block
+     *   noSupport         - neither voxel memory nor a visible STURDY_FULL_TOP
+     *                       face proves a floor, so the skill refuses to guess
+     *   danger            - the step exceeds the danger budget
+     *   behind            - the direction dot-multiplies to <= 0 against the
+     *                       desired heading, so it is dropped by the
+     *                       score > 0 filter even though it is walkable
+     *   ok                - a candidate survived every gate
+     * These four causes need completely different fixes, so a stall is
+     * undiagnosable until they are told apart.
+     */
+    private String stepDiagnostics = "";
 
     private final UUID expectedPlayerId;
     private final CoreSkillActuator coreActuator;
@@ -280,6 +297,7 @@ public final class GatherVisibleBlockClusterSkill
         stuckRecoveries = 0;
         approachSupportProbes = 0;
         lastApproachSupportProbeRevision = -1;
+        stepDiagnostics = "";
         discovered.clear();
         completed.clear();
         unavailable.clear();
@@ -355,7 +373,14 @@ public final class GatherVisibleBlockClusterSkill
                 .append(lastApproachSupportProbeRevision)
                 .append(",\"unavailable\":")
                 .append(unavailable.size())
-                .append('}');
+                .append(",\"stepDiagnostics\":\"")
+                /*
+                 * The vocabulary is fixed (E/W/S/N, ':', '|', and one of
+                 * blkBody / blkHead / noSupport / danger / ok / behind /
+                 * degenerate), so it can never contain a JSON escape.
+                 */
+                .append(stepDiagnostics)
+                .append("\"}");
         return new SkillCheckpoint(1, payload.toString());
     }
 
@@ -1173,10 +1198,24 @@ public final class GatherVisibleBlockClusterSkill
             PerceptionVec3 destination,
             Phase movementPhase
     ) {
+        final PerceptionVec3 desiredDirection =
+                destination.subtract(snapshot.core().position());
+        final double dangerBudget = maximumDanger(context);
+        /*
+         * Read-only diagnostic. It must see exactly the inputs and the gate
+         * order safeStep() sees, so it is captured here on the same frame
+         * rather than reconstructed later from a partially advanced one. It
+         * never mutates game state and never changes the movement decision.
+         */
+        recordStepDiagnostics(
+                snapshot.core(),
+                desiredDirection,
+                dangerBudget
+        );
         Optional<PerceptionVec3> step = safeStep(
                 snapshot.core(),
-                destination.subtract(snapshot.core().position()),
-                maximumDanger(context)
+                desiredDirection,
+                dangerBudget
         );
         if (step.isEmpty()) {
             coreActuator.stop();
@@ -1979,6 +2018,105 @@ public final class GatherVisibleBlockClusterSkill
                                 Comparator.reverseOrder()
                 ))
                 .map(StepCandidate::target);
+    }
+
+    /*
+     * Mirrors stepCandidate()'s gate order exactly and reports which gate
+     * rejected each cardinal direction. Kept next to safeStep() so the two
+     * cannot silently drift apart.
+     */
+    private void recordStepDiagnostics(
+            final CoreSkillFrame frame,
+            final PerceptionVec3 desiredDirection,
+            final double maximumDanger
+    ) {
+        final PerceptionVec3 horizontal = new PerceptionVec3(
+                desiredDirection.x(),
+                0.0,
+                desiredDirection.z()
+        );
+        if (horizontal.lengthSquared() <= LOOK_EPSILON) {
+            stepDiagnostics = "degenerate";
+            return;
+        }
+        final PerceptionVec3 desired = horizontal.normalized();
+        final GridPos feet = frame.feet();
+        final StringBuilder out = new StringBuilder(80);
+        for (int[] direction : CARDINALS) {
+            if (out.length() > 0) {
+                out.append('|');
+            }
+            out.append(stepDirectionLabel(direction))
+                    .append(':')
+                    .append(describeStepDirection(
+                            frame,
+                            feet,
+                            direction,
+                            desired,
+                            maximumDanger
+                    ));
+        }
+        stepDiagnostics = out.toString();
+    }
+
+    private static String stepDirectionLabel(final int[] direction) {
+        if (direction[0] == 1) {
+            return "E";
+        }
+        if (direction[0] == -1) {
+            return "W";
+        }
+        return direction[1] == 1 ? "S" : "N";
+    }
+
+    private static String describeStepDirection(
+            final CoreSkillFrame frame,
+            final GridPos feet,
+            final int[] direction,
+            final PerceptionVec3 desired,
+            final double maximumDanger
+    ) {
+        final GridPos destination = feet.offset(
+                direction[0],
+                0,
+                direction[1]
+        );
+        final Optional<ObservedVoxel> body =
+                frame.navigation().voxelAt(destination);
+        final Optional<ObservedVoxel> head =
+                frame.navigation().voxelAt(destination.above());
+        if (body.isPresent()
+                && !body.orElseThrow().kind().isPassable()) {
+            return "blkBody";
+        }
+        if (head.isPresent()
+                && !head.orElseThrow().kind().isPassable()) {
+            return "blkHead";
+        }
+        final boolean liquidBody = body.isPresent()
+                && body.orElseThrow().kind().isLiquid();
+        final Optional<ObservedVoxel> support =
+                frame.navigation().voxelAt(destination.below());
+        final boolean observedSupport = support.isPresent()
+                && support.orElseThrow().kind().supportsWeight();
+        if (!liquidBody
+                && !observedSupport
+                && !hasVisibleSturdyTop(frame, destination.below())) {
+            return "noSupport";
+        }
+        final double danger = Math.max(
+                body.map(ObservedVoxel::effectiveDanger).orElse(0.0),
+                head.map(ObservedVoxel::effectiveDanger).orElse(0.0)
+        );
+        if (danger > maximumDanger) {
+            return "danger";
+        }
+        final double score = desired.dot(new PerceptionVec3(
+                direction[0],
+                0.0,
+                direction[1]
+        ));
+        return score > 0.0 ? "ok" : "behind";
     }
 
     /**
