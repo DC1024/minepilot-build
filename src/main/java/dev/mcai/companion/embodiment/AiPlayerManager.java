@@ -218,8 +218,10 @@ public final class AiPlayerManager {
             final Optional<SafeCompanionSpawnLocator.Anchor> anchor
     ) {
         requireServerThread();
+        final Optional<SafeCompanionSpawnLocator.Anchor> effectiveAnchor =
+                resolveSpawnAnchor(anchor);
         if (lifecycle.state() == SessionState.PREPARING
-                && anchor.isPresent()
+                && effectiveAnchor.isPresent()
                 && pendingSpawn != null
                 && !pendingSpawn.anchored()) {
             /*
@@ -238,15 +240,55 @@ public final class AiPlayerManager {
             advanceSessionGeneration();
             lifecycle.beginStop();
             lifecycle.stopped();
-            return startSpawn(anchor);
+            return startSpawn(effectiveAnchor);
         }
-        return switch (lifecycle.state()) {
-            case ABSENT -> startSpawn(anchor);
+        final OperationResult result = switch (lifecycle.state()) {
+            case ABSENT -> startSpawn(effectiveAnchor);
             case PREPARING -> OperationResult.rejected("already_preparing");
             case ACTIVE -> OperationResult.rejected("already_active");
             case STOPPING -> OperationResult.rejected("stopping");
             case FAILED -> OperationResult.rejected("failed_remove_first");
         };
+        if (result.accepted() && anchor.isEmpty()
+                && effectiveAnchor.isPresent()) {
+            /*
+             * A bare, anchor-less caller (the runtime's bounded self-heal)
+             * was silently upgraded to the human's pending deferred anchor.
+             * Consume it so a later body re-creation cannot resurrect an
+             * already honoured human position.
+             */
+            deferredInitialAnchorPlayer = null;
+            deferredInitialAnchor = null;
+        }
+        return result;
+    }
+
+    /**
+     * Resolves the anchor a spawn request should actually use.
+     *
+     * <p>The runtime issues a bare {@code requestSpawn(server)} on every tick
+     * while a goal is RUNNING and the body is ABSENT.  When a human login has
+     * already recorded a bounded deferred anchor, honouring that bare request
+     * verbatim spawns an unanchored body and permanently starves the anchored
+     * re-login: the still-occupied companion UUID makes the retry in
+     * {@link #tryDeferredInitialAnchor()} wait, and the unanchored
+     * re-preparation replaces that window, so the persistent one-time
+     * provenance is never claimed.  Upgrading the request is the same
+     * "prefer the real player" rule already applied to an unanchored
+     * PREPARING state above.  A stale anchor from another server (or from a
+     * world that is no longer loaded) is never adopted.</p>
+     */
+    private Optional<SafeCompanionSpawnLocator.Anchor> resolveSpawnAnchor(
+            final Optional<SafeCompanionSpawnLocator.Anchor> requested
+    ) {
+        if (requested.isPresent()) {
+            return requested;
+        }
+        final SafeCompanionSpawnLocator.Anchor pending = deferredInitialAnchor;
+        if (pending == null || pending.level().getServer() != server) {
+            return requested;
+        }
+        return Optional.of(pending);
     }
 
     /**
@@ -455,7 +497,21 @@ public final class AiPlayerManager {
                         deferredInitialAnchorPlayer
                 );
         if (currentAnchor == null) {
-            return requestRemove().accepted();
+            /*
+             * The anchor human logged out before the one-time re-anchor
+             * could run.  The deferred request is stale; the live body is
+             * not.  Removing it here killed a healthy companion every time
+             * its anchor disconnected, and because the persistent
+             * "needs initial anchor" flag stays set, the resulting ABSENT
+             * state prepared another body that the next tick removed again:
+             * a self-sustaining login/kick loop with no runtime lifecycle
+             * event to explain it.  Drop only the stale request; the
+             * one-time provenance stays unclaimed and is claimed by the
+             * next real login through ensureSpawnNear.
+             */
+            deferredInitialAnchorPlayer = null;
+            deferredInitialAnchor = null;
+            return false;
         }
         final OperationResult result = reanchorInitialBodyNear(currentAnchor);
         return result.accepted()

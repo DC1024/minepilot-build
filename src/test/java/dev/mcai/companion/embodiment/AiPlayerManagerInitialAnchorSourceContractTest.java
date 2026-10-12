@@ -82,5 +82,34 @@ final class AiPlayerManagerInitialAnchorSourceContractTest {
                 "the body must be retained when the login anchor has no "
                     + "bounded vanilla-safe placement"
         );
+        /*
+         * A human who disconnects before the one-time re-anchor can run used
+         * to cost the world its live body: the retry removed it and left the
+         * persistent "needs initial anchor" flag set, so the resulting ABSENT
+         * state prepared another body that the next tick removed again - a
+         * self-sustaining login/kick loop with no runtime lifecycle event.
+         * The stale request must be dropped in place instead.
+         */
+        final int retryEnd = source.indexOf(
+                "private void tickPendingSpawn()",
+                retry
+        );
+        assertTrue(
+                retryEnd > retry
+                    && !source.substring(retry, retryEnd).contains(
+                        "requestRemove"
+                    ),
+                "an offline anchor must drop the stale request instead of "
+                    + "removing the live body"
+        );
+        assertTrue(
+                source.contains("resolveSpawnAnchor(anchor)")
+                    && source.contains(
+                        "SafeCompanionSpawnLocator.Anchor pending = "
+                            + "deferredInitialAnchor"
+                    ),
+                "a bare server-tick spawn request must reuse the pending "
+                    + "human anchor instead of starving the anchored re-login"
+        );
     }
 }
