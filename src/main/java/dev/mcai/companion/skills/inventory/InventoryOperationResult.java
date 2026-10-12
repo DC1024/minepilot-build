@@ -12,6 +12,13 @@ public record InventoryOperationResult(
         int affectedCount,
         Optional<SkillFailure> failure
 ) {
+    /**
+     * Failure code for a transaction refused by the per-tick budget. Kept
+     * identical to the menu-side code so a single helper can map both results
+     * without depending on either concrete type.
+     */
+    public static final String THROTTLED_CODE = "inventory.operation_throttled";
+
     public InventoryOperationResult {
         if (affectedCount < 0) {
             throw new IllegalArgumentException("affectedCount must be non-negative");
@@ -42,5 +49,15 @@ public record InventoryOperationResult(
                 0,
                 Optional.of(SkillFailure.of(code))
         );
+    }
+
+    /**
+     * Rejects a transaction the per-tick operation budget already spent.
+     *
+     * <p>Nothing ran and nothing changed, so the caller can retry on a later
+     * tick without any compensating action.</p>
+     */
+    public static InventoryOperationResult throttled() {
+        return rejected(THROTTLED_CODE);
     }
 }

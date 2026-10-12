@@ -43,6 +43,9 @@ public final class InventoryEmergencyEquipmentActuator
         final String code = result.failure()
                 .orElseThrow()
                 .code();
+        if (InventoryOperationResult.THROTTLED_CODE.equals(code)) {
+            return ActionOutcome.RATE_LIMITED;
+        }
         if (code.endsWith("wrong_thread")) {
             return ActionOutcome.WRONG_THREAD;
         }

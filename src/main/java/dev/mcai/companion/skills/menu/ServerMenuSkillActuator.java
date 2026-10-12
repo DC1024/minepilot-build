@@ -1,6 +1,8 @@
 package dev.mcai.companion.skills.menu;
 
+import dev.mcai.companion.action.ActionLimits;
 import dev.mcai.companion.action.AcceptedLowLevelAction;
+import dev.mcai.companion.action.InventoryOperationGate;
 import dev.mcai.companion.embodiment.AiPlayerManager;
 import dev.mcai.companion.embodiment.SessionState;
 import dev.mcai.companion.perception.MenuOptionSummary;
@@ -46,6 +48,7 @@ public final class ServerMenuSkillActuator
     private final LongSupplier sessionGeneration;
     private final Optional<FoundationActionAudit> foundationAudit;
     private final Consumer<AcceptedLowLevelAction> actionAudit;
+    private final InventoryOperationGate operationGate;
 
     public ServerMenuSkillActuator(
             final MinecraftServer server,
@@ -164,6 +167,27 @@ public final class ServerMenuSkillActuator
                 actionAudit,
                 "actionAudit"
         );
+        this.operationGate = new InventoryOperationGate(
+                ActionLimits.defaults().maximumContainerOperationsPerTick()
+        );
+    }
+
+    /**
+     * Refuses a whole transaction when this tick already spent its budget.
+     *
+     * <p>Consulted before the first {@link AbstractContainerMenu#clicked} and
+     * after the cheap binding validation, so a throttled call performs no
+     * world write and leaves the cursor untouched.</p>
+     */
+    private Optional<MenuOperationResult> throttledOperation(
+            final ServerPlayer player
+    ) {
+        final long tick = player.level().getGameTime();
+        if (!operationGate.mayStart(tick)) {
+            return Optional.of(MenuOperationResult.throttled());
+        }
+        operationGate.record(tick);
+        return Optional.empty();
     }
 
     @Override
@@ -272,6 +296,11 @@ public final class ServerMenuSkillActuator
                 .orElseThrow();
         final AbstractContainerMenu menu = checked.menu();
         final ServerPlayer player = checked.player();
+        final Optional<MenuOperationResult> throttled =
+                throttledOperation(player);
+        if (throttled.isPresent()) {
+            return throttled.orElseThrow();
+        }
         final Slot source = menu.getSlot(parameters.sourceSlot());
         final Slot destination = menu.getSlot(
                 parameters.destinationSlot()
@@ -447,6 +476,11 @@ public final class ServerMenuSkillActuator
                 .orElseThrow();
         final AbstractContainerMenu menu = checked.menu();
         final ServerPlayer player = checked.player();
+        final Optional<MenuOperationResult> throttled =
+                throttledOperation(player);
+        if (throttled.isPresent()) {
+            return throttled.orElseThrow();
+        }
         final Slot source = menu.getSlot(parameters.slot());
         final ItemStack expected = source.getItem().copy();
         final boolean fromPlayer =
@@ -569,6 +603,11 @@ public final class ServerMenuSkillActuator
                         .orElseThrow();
         final AbstractContainerMenu menu = checked.menu();
         final ServerPlayer player = checked.player();
+        final Optional<MenuOperationResult> throttled =
+                throttledOperation(player);
+        if (throttled.isPresent()) {
+            return throttled.orElseThrow();
+        }
         player.resetLastActionTime();
         final boolean accepted;
         if (menu instanceof MerchantMenu merchant) {
@@ -614,6 +653,13 @@ public final class ServerMenuSkillActuator
                 .checked()
                 .orElseThrow()
                 .player();
+        /*
+         * Closing is deliberately exempt from the per-tick operation budget.
+         * It starts no container transaction and moves no item, and refusing
+         * it could leave a menu open after the operation that opened it was
+         * itself throttled, stranding the companion inside a container it can
+         * no longer act on. Tearing a menu down is always allowed.
+         */
         player.resetLastActionTime();
         player.closeContainer();
         if (player.containerMenu != player.inventoryMenu

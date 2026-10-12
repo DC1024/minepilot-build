@@ -8,11 +8,22 @@ public record ActionLimits(
         double movementAccelerationPerTick,
         float maximumYawDegreesPerTick,
         float maximumPitchDegreesPerTick,
-        int miningTimeoutTicks
+        int miningTimeoutTicks,
+        int maximumContainerOperationsPerTick
 ) {
     public static final double MAX_MOVEMENT_ACCELERATION = 1.0;
     public static final float MAX_TURN_DEGREES_PER_TICK = 90.0F;
     public static final int MAX_MINING_TIMEOUT_TICKS = 72_000;
+
+    /**
+     * Upper bound on whole container transactions one server tick may start.
+     *
+     * <p>Kept equal to the ceiling the runtime already enforces by
+     * arbitrating a single behaviour lane per tick, so writing it down changes
+     * no behaviour. The field exists so that ceiling is explicit and testable
+     * instead of implied. See {@link InventoryOperationGate}.</p>
+     */
+    public static final int MAX_CONTAINER_OPERATIONS_PER_TICK = 1;
 
     public ActionLimits {
         movementAccelerationPerTick = ActionValidation.finite(
@@ -34,12 +45,21 @@ public record ActionLimits(
                 || maximumPitchDegreesPerTick <= 0.0F
                 || maximumPitchDegreesPerTick > MAX_TURN_DEGREES_PER_TICK
                 || miningTimeoutTicks < 20
-                || miningTimeoutTicks > MAX_MINING_TIMEOUT_TICKS) {
+                || miningTimeoutTicks > MAX_MINING_TIMEOUT_TICKS
+                || maximumContainerOperationsPerTick < 1
+                || maximumContainerOperationsPerTick
+                        > MAX_CONTAINER_OPERATIONS_PER_TICK) {
             throw new IllegalArgumentException("Action limits are outside hard bounds");
         }
     }
 
     public static ActionLimits defaults() {
-        return new ActionLimits(0.25, 20.0F, 15.0F, 7_200);
+        return new ActionLimits(
+                0.25,
+                20.0F,
+                15.0F,
+                7_200,
+                MAX_CONTAINER_OPERATIONS_PER_TICK
+        );
     }
 }

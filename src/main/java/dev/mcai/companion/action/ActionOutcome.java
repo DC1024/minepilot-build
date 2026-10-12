@@ -21,6 +21,13 @@ public enum ActionOutcome {
     WORLD_DENIED(false),
     ITEM_UNAVAILABLE(false),
     ITEM_ON_COOLDOWN(false),
+    /**
+     * Refused because the per-tick container-operation budget is already
+     * spent. The operation did not run and changed nothing, so a caller may
+     * retry on a later tick; this is deliberately not reported as an invalid
+     * player state, which callers treat as a reason to give up.
+     */
+    RATE_LIMITED(false),
     TIMED_OUT(false);
 
     private final boolean accepted;

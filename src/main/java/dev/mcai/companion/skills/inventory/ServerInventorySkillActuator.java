@@ -1,5 +1,7 @@
 package dev.mcai.companion.skills.inventory;
 
+import dev.mcai.companion.action.ActionLimits;
+import dev.mcai.companion.action.InventoryOperationGate;
 import dev.mcai.companion.embodiment.AiPlayerManager;
 import java.util.List;
 import java.util.Objects;
@@ -45,6 +47,7 @@ public final class ServerInventorySkillActuator
     private final MinecraftServer server;
     private final UUID expectedPlayerId;
     private final Supplier<Optional<ServerPlayer>> playerLookup;
+    private final InventoryOperationGate operationGate;
 
     public ServerInventorySkillActuator(
             final MinecraftServer server,
@@ -71,6 +74,27 @@ public final class ServerInventorySkillActuator
                 playerLookup,
                 "playerLookup"
         );
+        this.operationGate = new InventoryOperationGate(
+                ActionLimits.defaults().maximumContainerOperationsPerTick()
+        );
+    }
+
+    /**
+     * Refuses a whole transaction when this tick already spent its budget.
+     *
+     * <p>Consulted before the first {@link AbstractContainerMenu#clicked} and
+     * after the cheap parameter validation, so a throttled call performs no
+     * world write and leaves the cursor untouched.</p>
+     */
+    private Optional<InventoryOperationResult> throttledOperation(
+            final ServerPlayer player
+    ) {
+        final long tick = player.level().getGameTime();
+        if (!operationGate.mayStart(tick)) {
+            return Optional.of(InventoryOperationResult.throttled());
+        }
+        operationGate.record(tick);
+        return Optional.empty();
     }
 
     @Override
@@ -147,6 +171,11 @@ public final class ServerInventorySkillActuator
             return InventoryOperationResult.success();
         }
 
+        final Optional<InventoryOperationResult> throttled =
+                throttledOperation(player);
+        if (throttled.isPresent()) {
+            return throttled.orElseThrow();
+        }
         useInventoryMenu(player);
         final int sourceInventorySlot = findOwnedItemForEquip(
                 player,
@@ -267,6 +296,11 @@ public final class ServerInventorySkillActuator
         }
         final ServerPlayer player = playerLookup.get().orElseThrow();
         final Item item = resolveItem(parameters.itemId()).orElseThrow();
+        final Optional<InventoryOperationResult> throttled =
+                throttledOperation(player);
+        if (throttled.isPresent()) {
+            return throttled.orElseThrow();
+        }
         useInventoryMenu(player);
         final AbstractContainerMenu menu = player.inventoryMenu;
         final int before = countInventoryItem(player, item);
@@ -336,6 +370,11 @@ public final class ServerInventorySkillActuator
         final ResolvedCraftingRecipe resolved = resolveCraftingRecipe(
                 parameters.recipeId()
         ).orElseThrow();
+        final Optional<InventoryOperationResult> throttled =
+                throttledOperation(player);
+        if (throttled.isPresent()) {
+            return throttled.orElseThrow();
+        }
         final AbstractCraftingMenu menu =
                 (AbstractCraftingMenu) player.containerMenu;
 

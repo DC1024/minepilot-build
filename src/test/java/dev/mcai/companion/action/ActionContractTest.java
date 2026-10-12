@@ -50,11 +50,19 @@ final class ActionContractTest {
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new ActionLimits(0.25, 91.0F, 15.0F, 100)
+                () -> new ActionLimits(0.25, 91.0F, 15.0F, 100, 1)
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new ActionLimits(0.25, 20.0F, 15.0F, 10)
+                () -> new ActionLimits(0.25, 20.0F, 15.0F, 10, 1)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new ActionLimits(0.25, 20.0F, 15.0F, 100, 0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new ActionLimits(0.25, 20.0F, 15.0F, 100, 2)
         );
     }
 

@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 
 final class LocalInputControllerTest {
     private static final ActionLimits LIMITS =
-            new ActionLimits(0.25, 20.0F, 15.0F, 100);
+            new ActionLimits(0.25, 20.0F, 15.0F, 100, 1);
 
     @Test
     void smoothsMovementAndNeverExceedsUnitMagnitude() {
