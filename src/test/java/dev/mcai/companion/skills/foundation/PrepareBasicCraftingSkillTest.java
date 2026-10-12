@@ -5,6 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.mcai.companion.navigation.LocalNavSnapshot;
+import dev.mcai.companion.navigation.GridPos;
+import dev.mcai.companion.navigation.ObservedVoxel;
+import dev.mcai.companion.navigation.OccupancyEvidence;
+import dev.mcai.companion.navigation.VoxelKind;
 import dev.mcai.companion.perception.BlockCoordinate;
 import dev.mcai.companion.perception.HeldItemSummary;
 import dev.mcai.companion.perception.InventoryItemSummary;
@@ -15,6 +19,7 @@ import dev.mcai.companion.perception.VisibleBlockFace;
 import dev.mcai.companion.perception.VisibleEntity;
 import dev.mcai.companion.skills.core.CoreSkillFrame;
 import dev.mcai.companion.waypoint.DimensionRef;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -186,6 +191,110 @@ final class PrepareBasicCraftingSkillTest {
                 PerceptionProvenance.BLOCK_SURFACE_RAY_CLIP,
                 Map.of(),
                 TopSupportAffordance.STURDY_FULL_TOP
+        );
+    }
+
+    @Test
+    void supportRepositionDescendsOutOfACanopyInsteadOfStayingInIt() {
+        /*
+         * A body with no legitimate table support in reach can only be freed
+         * by leaving its own layer: a live body perched in a canopy spent over
+         * an hour cycling no-support, no-pickaxe and no-stone while standing
+         * six blocks above ground it had already surveyed, because the search
+         * refused to look below its feet.
+         */
+        final GridPos sameLayer = new GridPos(2, 64, 0);
+        final GridPos lower = new GridPos(3, 62, 0);
+        final List<ObservedVoxel> voxels = new ArrayList<>();
+        addSafeStand(voxels, sameLayer);
+        addSafeStand(voxels, lower);
+
+        final CoreSkillFrame frame = frameWithVoxels(voxels);
+
+        assertEquals(
+                lower,
+                PrepareBasicCraftingSkill.selectSupportReposition(
+                        frame,
+                        Set.of(),
+                        0.25
+                ).orElseThrow(),
+                "A canopy body must be allowed to descend"
+        );
+    }
+
+    @Test
+    void supportRepositionStaysPutWhenNoDescentIsObserved() {
+        final GridPos sameLayer = new GridPos(2, 64, 0);
+        final List<ObservedVoxel> voxels = new ArrayList<>();
+        addSafeStand(voxels, sameLayer);
+
+        final CoreSkillFrame frame = frameWithVoxels(voxels);
+
+        assertEquals(
+                sameLayer,
+                PrepareBasicCraftingSkill.selectSupportReposition(
+                        frame,
+                        Set.of(),
+                        0.25
+                ).orElseThrow(),
+                "The ordinary same-layer reposition must still work"
+        );
+    }
+
+    /** Registers a standable cell: clear feet, clear head, weight-bearing floor. */
+    private static void addSafeStand(
+            final List<ObservedVoxel> voxels,
+            final GridPos stand
+    ) {
+        voxels.add(clearAir(stand));
+        voxels.add(clearAir(stand.above()));
+        voxels.add(new ObservedVoxel(
+                stand.below(),
+                VoxelKind.SOLID,
+                0.0,
+                1L,
+                OccupancyEvidence.SURFACE_HIT,
+                TopSupportAffordance.STURDY_FULL_TOP
+        ));
+    }
+
+    private static ObservedVoxel clearAir(final GridPos position) {
+        return new ObservedVoxel(
+                position,
+                VoxelKind.AIR,
+                0.0,
+                1L,
+                OccupancyEvidence.MULTI_RAY_CLEAR,
+                TopSupportAffordance.UNKNOWN
+        );
+    }
+
+    private static CoreSkillFrame frameWithVoxels(
+            final List<ObservedVoxel> voxels
+    ) {
+        return new CoreSkillFrame(
+                UUID.fromString(
+                        "00000000-0000-0000-0000-000000000744"
+                ),
+                OVERWORLD,
+                100L,
+                7L,
+                new PerceptionVec3(0.5, 64.0, 0.5),
+                new PerceptionVec3(0.5, 65.62, 0.5),
+                new PerceptionVec3(0.0, 0.0, 1.0),
+                true,
+                false,
+                0.0,
+                new LocalNavSnapshot(OVERWORLD, 7L, voxels),
+                List.of(),
+                20.0F,
+                20.0F,
+                20,
+                List.of(),
+                HeldItemSummary.empty(),
+                HeldItemSummary.empty(),
+                List.of(),
+                List.of()
         );
     }
 }

@@ -72,6 +72,25 @@ public final class PrepareBasicCraftingSkill
     private static final int MAXIMUM_SUPPORT_SCANS = 16;
     private static final int MAXIMUM_SUPPORT_REPOSITIONS = 3;
     /*
+     * Reposition search bounds. A stand must stay within ordinary walking
+     * range, but it may sit below the body: a canopy perch has no legitimate
+     * support surface, and refusing to look downward left every reposition
+     * inside the same leaves that caused the failure. Three blocks is the
+     * deepest descent a vanilla body can take without fall damage, which
+     * observedSafeStand does not model.
+     */
+    private static final int SUPPORT_REPOSITION_DESCENT_BLOCKS = 3;
+    private static final double MINIMUM_REPOSITION_DISTANCE = 2.0;
+    private static final double MAXIMUM_REPOSITION_DISTANCE = 5.0;
+    /*
+     * Weight of one block of descent when ranking stands, expressed in blocks
+     * of walking. Descending is cheaper and more reliable than walking around
+     * inside a canopy, so a stand one block lower wins against one that is up
+     * to this many blocks closer horizontally. The nearest stand at a given
+     * depth still wins, so the body descends without stranding itself.
+     */
+    private static final double SUPPORT_REPOSITION_DESCENT_WEIGHT = 2.0;
+    /*
      * At standing eye height, a 55-degree floor ray lands only about 1.13
      * blocks away and is then correctly rejected by the 1.35-block
      * self-clearance rule below. A shallower look exposes a reachable support
@@ -1182,13 +1201,27 @@ public final class PrepareBasicCraftingSkill
         return frame.navigation().observedVoxels().values().stream()
                 .map(ObservedVoxel::position)
                 .filter(candidate -> !rejected.contains(candidate))
+                /*
+                 * SUPPORT_REPOSITION_DESCENT_BLOCKS: a body perched in a
+                 * canopy has no legitimate table support in sight, and the
+                 * only way out is down. While the search was limited to the
+                 * body's own layer, every reposition landed in the same
+                 * leaves that produced the failure, so the goal could only
+                 * repeat: a live body spent over an hour oscillating between
+                 * no support, no pickaxe and no stone while standing six
+                 * blocks above the ground it had already surveyed.
+                 */
                 .filter(candidate ->
-                        Math.abs(candidate.y() - current.y()) <= 1)
+                        candidate.y() <= current.y()
+                            && current.y() - candidate.y()
+                                <= SUPPORT_REPOSITION_DESCENT_BLOCKS)
                 .filter(candidate -> {
-                    final double distance = current.euclideanDistance(
-                            candidate
+                    final double horizontal = Math.hypot(
+                            candidate.x() + 0.5 - current.x() - 0.5,
+                            candidate.z() + 0.5 - current.z() - 0.5
                     );
-                    return distance >= 2.0 && distance <= 5.0;
+                    return horizontal >= MINIMUM_REPOSITION_DISTANCE
+                            && horizontal <= MAXIMUM_REPOSITION_DISTANCE;
                 })
                 .filter(candidate -> observedSafeStand(
                         frame,
@@ -1211,8 +1244,24 @@ public final class PrepareBasicCraftingSkill
                                             candidate.y() + 1,
                                             candidate.z()
                                         )))
+                /*
+                 * Descend before moving sideways. Falling one block is the
+                 * cheapest, most reliable way out of an enclosed canopy, and
+                 * the flat comparator preferred the horizontally closest
+                 * stand, which kept electing another stand in the same canopy
+                 * layer. Treating one block of descent as worth
+                 * SUPPORT_REPOSITION_DESCENT_WEIGHT blocks of walking keeps
+                 * the nearest stand at a given depth winning, so the body
+                 * leaves the canopy without stranding itself.
+                 */
                 .min(Comparator
-                        .comparingDouble(current::euclideanDistance)
+                        .comparingDouble((GridPos candidate) ->
+                                Math.hypot(
+                                    candidate.x() + 0.5 - current.x() - 0.5,
+                                    candidate.z() + 0.5 - current.z() - 0.5
+                                )
+                                + (current.y() - candidate.y())
+                                    * SUPPORT_REPOSITION_DESCENT_WEIGHT)
                         .thenComparingInt(GridPos::y)
                         .thenComparingInt(GridPos::x)
                         .thenComparingInt(GridPos::z));
