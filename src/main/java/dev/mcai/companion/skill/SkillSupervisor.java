@@ -116,6 +116,22 @@ public final class SkillSupervisor implements AutoCloseable {
     private SkillFailure lastStartRejection;
     /** Last fair checkpoint payload retained for bounded diagnostics only. */
     private String lastCheckpointPayload;
+    /**
+     * Whether the transition that is about to end the active execution ended
+     * it by <em>completing</em> with a fresh checkpoint already written this
+     * tick.
+     *
+     * <p>FIX17 writes a terminal marker from
+     * {@link #dispatchTerminalCheckpoint(SkillResult)} so an execution that
+     * ends without a fresh skill checkpoint never lingers as a frozen
+     * intermediate phase. A completion is the one ending that carries its own
+     * authoritative final checkpoint: the skill chose that moment, so
+     * overwriting its payload drops the numbers the skill just published and
+     * stamps the row with a sequence the supervisor's own counter never
+     * reached. Cancellations and forced failures keep the marker, because
+     * those end mid-phase against the skill's own will.</p>
+     */
+    private boolean completedWithFreshCheckpoint;
 
     public SkillSupervisor(
             SkillRegistry registry,
@@ -239,6 +255,7 @@ public final class SkillSupervisor implements AutoCloseable {
                 );
             }
         }
+        completedWithFreshCheckpoint = false;
         finish(SkillResult.failed(SKILL_TICK_STARVED));
     }
 
@@ -258,6 +275,7 @@ public final class SkillSupervisor implements AutoCloseable {
         if (bindingFailure.isPresent()) {
             return rejectedMutation(bindingFailure.get());
         }
+        completedWithFreshCheckpoint = false;
         cancelPending = true;
         state = State.CANCEL_PENDING;
         if (active.atSafeCheckpoint) {
@@ -391,6 +409,7 @@ public final class SkillSupervisor implements AutoCloseable {
         }
         pendingCheckpoint.set(null);
         lastStartRejection = null;
+        completedWithFreshCheckpoint = false;
         if (active != null) {
             finish(SkillResult.safeIdle(BODY_SESSION_ENDED));
         }
@@ -417,6 +436,7 @@ public final class SkillSupervisor implements AutoCloseable {
         }
         pendingCheckpoint.set(null);
         lastStartRejection = null;
+        completedWithFreshCheckpoint = false;
         if (active != null) {
             finish(SkillResult.safeIdle(MODEL_DISCONNECTED));
         }
@@ -544,6 +564,7 @@ public final class SkillSupervisor implements AutoCloseable {
     }
 
     private <P> Snapshot tickTyped(Active<P> execution, SkillContext context) {
+        completedWithFreshCheckpoint = false;
         Optional<SkillFailure> bindingFailure = validateActiveContext(
                 execution,
                 context,
@@ -666,6 +687,15 @@ public final class SkillSupervisor implements AutoCloseable {
                     context.gameTick(),
                     checkpoint
             ));
+            /*
+             * Only a completion keeps this payload against the FIX17 terminal
+             * marker. A RUNNING tick that merely passes a checkpoint still
+             * needs the marker if the execution ends later in the same tick
+             * (budget breach, stall, cancel), and a FAILED tick wrote no
+             * completion to preserve.
+             */
+            completedWithFreshCheckpoint =
+                    tickResult.status() == SkillTickResult.Status.COMPLETED;
         }
 
         /*
@@ -854,11 +884,24 @@ public final class SkillSupervisor implements AutoCloseable {
         active = null;
         cancelPending = false;
         disconnectedPending = false;
+        completedWithFreshCheckpoint = false;
     }
 
     private void dispatchTerminalCheckpoint(SkillResult result) {
         final Active<?> ended = active;
         if (ended == null || closed.get()) {
+            return;
+        }
+        /*
+         * A skill that just completed already published the authoritative
+         * final payload of its own phase, and the marker below would replace
+         * it with "supervisorTerminal" and a sequence the counter never
+         * reached. Every other ending keeps the marker: a cancelled or
+         * forcibly failed execution stopped mid-phase against the skill's
+         * will, so it has no final payload worth preserving and the row must
+         * be rewritten rather than left as a frozen intermediate state.
+         */
+        if (completedWithFreshCheckpoint) {
             return;
         }
         final String failureCode = result.failure()

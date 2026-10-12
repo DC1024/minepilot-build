@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -146,6 +147,161 @@ class SkillSupervisorTest {
             assertEquals(11, persisted.worldRevision());
             assertEquals(1, persisted.sequence());
             assertEquals(102, persisted.gameTick());
+        }
+    }
+
+    @Test
+    void completionKeepsItsOwnFinalCheckpointInsteadOfATerminalMarker()
+            throws Exception {
+        /*
+         * FIX17 rewrites the row to a supervisorTerminal marker when an
+         * execution ends without a fresh checkpoint. A completion is the one
+         * ending that publishes its own authoritative final payload, so the
+         * marker must not replace it: doing so dropped the numbers the skill
+         * just wrote and stamped the row with the counter's next sequence,
+         * which no submission ever actually used.
+         */
+        ScriptedSkill skill = new ScriptedSkill();
+        skill.steps.add(SkillTickResult.running(true, false));
+        skill.steps.add(SkillTickResult.completed());
+        List<SavedCheckpoint> saved = new ArrayList<>();
+        CountDownLatch checkpointSaved = new CountDownLatch(1);
+        SkillCheckpointSink sink = (
+                name,
+                goalRevision,
+                worldRevision,
+                sequence,
+                gameTick,
+                checkpoint
+        ) -> {
+            saved.add(new SavedCheckpoint(
+                    name,
+                    goalRevision,
+                    worldRevision,
+                    sequence,
+                    gameTick,
+                    checkpoint
+            ));
+            checkpointSaved.countDown();
+            return CompletableFuture.completedFuture(null);
+        };
+
+        try (SkillSupervisor supervisor = supervisor(skill, sink, permissivePolicy(20))) {
+            assertTrue(supervisor.start(
+                    decision("collect", 7, 11, "count", "128"),
+                    context(7, 11, 100, false, true, 0.05)
+            ).accepted());
+            supervisor.tick(context(7, 11, 101, false, true, 0.05));
+            SkillSupervisor.Snapshot completed = supervisor.tick(
+                    context(7, 11, 102, false, true, 0.05)
+            );
+
+            assertEquals(SkillSupervisor.State.COMPLETED, completed.state());
+            assertEquals(1, completed.checkpointSequence());
+            assertTrue(checkpointSaved.await(2, TimeUnit.SECONDS));
+            /*
+             * Checkpoint writes are coalesced through a single pending slot,
+             * so assert over everything that reached the sink rather than
+             * over "the last one". Before the fix the terminal marker was
+             * submitted from the same tick and replaced this payload.
+             */
+            assertFalse(saved.isEmpty(), "the completion checkpoint was never saved");
+            for (SavedCheckpoint persisted : saved) {
+                assertEquals(
+                        1,
+                        persisted.sequence(),
+                        "no submission may use a sequence the counter never "
+                                + "reached"
+                );
+                assertFalse(
+                        persisted.checkpoint().payload().contains(
+                                "supervisorTerminal"
+                        ),
+                        "A completion must keep its own final payload: "
+                                + persisted.checkpoint().payload()
+                );
+            }
+            assertEquals(102, saved.getFirst().gameTick());
+        }
+    }
+
+    @Test
+    void cancellationStillRewritesTheRowToATerminalMarker() throws Exception {
+        /*
+         * The complement of the case above: a cancel stops the skill
+         * mid-phase against its own will, so it has no final payload worth
+         * keeping and the row must not be left as a frozen intermediate
+         * state. This is the branch FIX17 exists for, and the completion
+         * exemption must not swallow it.
+         */
+        ScriptedSkill skill = new ScriptedSkill();
+        skill.steps.add(SkillTickResult.running(true, false));
+        skill.steps.add(SkillTickResult.running(true, false));
+        skill.steps.add(SkillTickResult.running(true, true));
+        List<SavedCheckpoint> saved = new ArrayList<>();
+        CountDownLatch markerSaved = new CountDownLatch(1);
+        SkillCheckpointSink sink = (
+                name,
+                goalRevision,
+                worldRevision,
+                sequence,
+                gameTick,
+                checkpoint
+        ) -> {
+            saved.add(new SavedCheckpoint(
+                    name,
+                    goalRevision,
+                    worldRevision,
+                    sequence,
+                    gameTick,
+                    checkpoint
+            ));
+            if (checkpoint.payload().contains("supervisorTerminal")) {
+                markerSaved.countDown();
+            }
+            return CompletableFuture.completedFuture(null);
+        };
+
+        try (SkillSupervisor supervisor = supervisor(skill, sink, permissivePolicy(20))) {
+            assertTrue(supervisor.start(
+                    decision("collect", 7, 11, "count", "128"),
+                    context(7, 11, 100, false, true, 0.05)
+            ).accepted());
+            supervisor.tick(context(7, 11, 101, false, true, 0.05));
+            assertTrue(supervisor.requestCancel(
+                    context(7, 11, 101, false, true, 0.05)
+            ).accepted());
+            /*
+             * The cancel is deferred to the next safe checkpoint, so two more
+             * ticks are needed before the execution actually ends.
+             */
+            SkillSupervisor.Snapshot cancelled = supervisor.tick(
+                    context(7, 11, 102, false, true, 0.05)
+            );
+            assertEquals(
+                    SkillSupervisor.State.CANCEL_PENDING,
+                    cancelled.state()
+            );
+            cancelled = supervisor.tick(
+                    context(7, 11, 103, false, true, 0.05)
+            );
+            assertEquals(SkillSupervisor.State.CANCELLED, cancelled.state());
+
+            assertTrue(
+                    markerSaved.await(2, TimeUnit.SECONDS),
+                    "A cancelled execution must be rewritten to a terminal "
+                            + "marker, last payload was: " + lastPayload.get()
+            );
+            assertTrue(
+                    saved.stream().anyMatch(entry ->
+                            entry.checkpoint().payload().contains("CANCELLED")
+                                    && entry.checkpoint().payload().contains(
+                                            "supervisorTerminal"
+                                    )),
+                    "no terminal marker carrying CANCELLED reached the sink: "
+                            + saved
+            );
+            assertEquals(1, skill.cancelCalls);
         }
     }
 
