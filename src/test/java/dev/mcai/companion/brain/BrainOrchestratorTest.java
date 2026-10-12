@@ -2472,8 +2472,20 @@ class BrainOrchestratorTest {
     @Test
     void refusedSkillStartNamesTheRejectedSkillForTheNextPlannerRequest() {
         try (Fixture fixture = new Fixture()) {
+            /*
+             * Real skills prefix their precondition code with their own name
+             * (PrepareIronToolkitSkill rejects with
+             * "prepare_iron_toolkit.stone_pickaxe_required"). The orchestrator
+             * publishes the bare reason as lastSkillStartRejectionCode and the
+             * name beside it as lastSkillStartRejectedSkill, and it only does
+             * so when the recorded code provably belongs to the refused skill.
+             * A fixture that returns the bare reason would therefore exercise
+             * neither field, so the prefixed form is the honest stand-in.
+             */
             fixture.ironToolkitSkill.preconditionFailure =
-                    SkillFailure.of("stone_pickaxe_required");
+                    SkillFailure.of(
+                            "prepare_iron_toolkit.stone_pickaxe_required"
+                    );
             fixture.startGoal();
             fixture.brain.tick();
 
@@ -2484,6 +2496,17 @@ class BrainOrchestratorTest {
                     "",
                     List.of()
             ));
+            fixture.brain.tick();
+
+            /*
+             * The refusal is attached to the *next* planner request, and the
+             * tick that processes the refusal returns early after scheduling
+             * the backoff. Advance the clock past
+             * BrainPolicy.minimumReplanBackoff() and tick again so a request
+             * is actually issued; the single tick above cannot observe the
+             * correction by construction.
+             */
+            fixture.clock.addAndGet(1_000L);
             fixture.brain.tick();
 
             /*
