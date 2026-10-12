@@ -290,7 +290,7 @@ class SkillSupervisorTest {
             assertTrue(
                     markerSaved.await(2, TimeUnit.SECONDS),
                     "A cancelled execution must be rewritten to a terminal "
-                            + "marker, last payload was: " + lastPayload.get()
+                            + "marker; reached the sink: " + saved
             );
             assertTrue(
                     saved.stream().anyMatch(entry ->
