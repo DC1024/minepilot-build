@@ -70,6 +70,13 @@ public final class GatherVisibleBlockClusterSkill
     private static final double PICKUP_ORIGIN_RADIUS = 3.5;
     private static final double STUCK_PROGRESS_DISTANCE_SQUARED = 0.01;
     private static final int MAXIMUM_APPROACH_SUPPORT_PROBES = 8;
+    /*
+     * A stalled interaction revision (a stationary body between the 2-5 Hz
+     * semantic samples) used to block every re-probe of the next-step floor
+     * and deadlock the approach at "noSupport" (P14). Allow a bounded
+     * re-probe on this tick cooldown even when the revision has not advanced.
+     */
+    private static final int APPROACH_SUPPORT_PROBE_REISSUE_TICKS = 4;
     private static final float[] SCAN_PITCHES = {
             -35.0F,
             0.0F,
@@ -145,6 +152,7 @@ public final class GatherVisibleBlockClusterSkill
     private int stuckRecoveries;
     private int approachSupportProbes;
     private long lastApproachSupportProbeRevision = -1;
+    private long lastApproachSupportProbeTick = -1;
     private DropCollectionDebt uncollectedDropDebt;
 
     public GatherVisibleBlockClusterSkill(
@@ -1271,8 +1279,24 @@ public final class GatherVisibleBlockClusterSkill
                  */
                 final long observationRevision = snapshot.interaction()
                         .observationRevision();
-                if (observationRevision
-                        <= lastApproachSupportProbeRevision) {
+                /*
+                 * The body ticks at 20 Hz while semantic sight is sampled at
+                 * only 2-5 Hz; a stationary body may see its interaction
+                 * revision stall entirely between samples. The old gate
+                 * blocked every re-probe until the revision strictly advanced,
+                 * which let a stalled revision deadlock the approach at
+                 * "noSupport" (P14: the body sits still, never issues a probe,
+                 * never advances and never gives up). Re-issue the floor
+                 * evidence probe on a bounded tick cooldown as well, so a
+                 * stuck revision still gathers support instead of hanging.
+                 * Total probes stay capped by MAXIMUM_APPROACH_SUPPORT_PROBES.
+                 */
+                final boolean revisionAdvanced =
+                        observationRevision > lastApproachSupportProbeRevision;
+                final boolean probeCooldownElapsed =
+                        context.gameTick() - lastApproachSupportProbeTick
+                                >= APPROACH_SUPPORT_PROBE_REISSUE_TICKS;
+                if (!revisionAdvanced && !probeCooldownElapsed) {
                     return running(context, false, false);
                 }
                 if (approachSupportProbes
@@ -1312,6 +1336,7 @@ public final class GatherVisibleBlockClusterSkill
                     }
                     lastApproachSupportProbeRevision =
                             observationRevision;
+                    lastApproachSupportProbeTick = context.gameTick();
                     approachSupportProbes++;
                     return running(context, true, false);
                 }
