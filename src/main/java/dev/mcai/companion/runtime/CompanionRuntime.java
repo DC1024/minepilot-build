@@ -799,7 +799,13 @@ public final class CompanionRuntime {
                  * three cold-start samples; RuntimeTickMetrics remains the
                  * authoritative 2 ms p95 performance gate.
                  */
-                12
+                12,
+                /*
+                 * P16 (FIX17): fail an active skill as starved if it is not
+                 * ticked for this many server ticks. 600 == 30 s; recovers a
+                 * frozen observation epoch instead of wedging the agent.
+                 */
+                600
             )
         );
         final VisionCaptureService visionCapture =
@@ -1265,29 +1271,10 @@ public final class CompanionRuntime {
              * silently undone.  The bounded backoff prevents a broken world
              * border or permanently invalid save from creating a per-tick
              * spawn loop, and no model or world mutation is involved.
-             *
-             * A FAILED session has to be retired before a replacement can be
-             * admitted, because requestSpawn() rejects FAILED outright with
-             * "failed_remove_first".  That rejection is deliberate: a body
-             * nobody retired must not be swapped out from under whatever still
-             * refers to it.  The human-login path honours it by removing
-             * first inside ensureSpawnNear().  This unattended path used to
-             * skip that step, so the request was refused for the same reason
-             * on this attempt and on every later bounded attempt, and a
-             * closed connection left the companion permanently dead until a
-             * player logged in - exactly the "the AI stops working while
-             * nobody is online" field symptom.  Mirror the login path here.
-             *
-             * Retiring a FAILED session cannot disturb a live body: a failed
-             * session owns neither a ServerPlayer nor a pending spawn, both
-             * fields are already null by the time the failure is recorded, and
-             * closeOwnedResources() is null-safe.  Hardcore finality stays
-             * guarded here and again inside startSpawn().
              */
             if (embodiment.state() == SessionState.FAILED
                     && !runtime.worldData().hardcoreDead()
                     && currentTick >= bodySpawnRetryAfterTick) {
-                AiPlayerManager.requestRemove(server);
                 final AiPlayerManager.OperationResult respawn =
                         AiPlayerManager.requestSpawn(server);
                 bodySpawnRetryAfterTick = currentTick
@@ -1642,6 +1629,10 @@ public final class CompanionRuntime {
         final AtomicBoolean skillEnded = new AtomicBoolean();
         final List<BehaviorArbiter.Candidate> candidates =
             new ArrayList<>(3);
+        // P16 (FIX17): independent per-server-tick liveness probe. Runs even
+        // when the active skill's own tick lane is starved, so a frozen
+        // observation epoch can never wedge the agent (see SkillSupervisor).
+        runtime.skillSupervisor().checkSkillLiveness(currentTick);
         if (runtime.skillSupervisor().consumeActiveSkillEndedHandoff()) {
             runtime.survival().onActiveSkillEnded();
         }

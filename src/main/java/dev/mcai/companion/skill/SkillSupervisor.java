@@ -69,6 +69,8 @@ public final class SkillSupervisor implements AutoCloseable {
             SkillFailure.of("context_mode_changed");
     private static final SkillFailure NON_MONOTONIC_TICK =
             SkillFailure.of("non_monotonic_game_tick");
+    private static final SkillFailure SKILL_TICK_STARVED =
+            SkillFailure.of("skill_tick_starved");
     private static final SkillFailure CLOCK_REGRESSED =
             SkillFailure.of("monotonic_clock_regressed");
     private static final SkillFailure INVALID_TICK_RESULT =
@@ -188,6 +190,56 @@ public final class SkillSupervisor implements AutoCloseable {
             return snapshot();
         }
         return tickTyped(active, context);
+    }
+
+    /**
+     * Per-server-tick liveness probe, driven from the runtime's server-tick
+     * loop and therefore independent of {@link #tick(SkillContext)}.
+     *
+     * <p>An active skill whose own tick lane is starved (for example because the
+     * outer tick driver stops calling {@code tick} while perception or the
+     * interaction frame is unavailable) would otherwise never reach the
+     * {@code STALE_WORLD} / {@code SKILL_STALLED} guards inside {@code tick},
+     * so it stays {@code RUNNING} forever, freezes the brain's observation
+     * epoch, and wedges the whole agent. This probe fails the starved skill so
+     * the brain can replan. See defect P16.</p>
+     */
+    public synchronized Snapshot checkSkillLiveness(long currentTick) {
+        if (closed.get() || active == null) {
+            return snapshot();
+        }
+        final long starvedTicks = currentTick - active.lastGameTick;
+        if (starvedTicks < policy.skillTickStarvationTicks()) {
+            return snapshot();
+        }
+        MinecraftAiCompanion.LOGGER.warn(
+                "Skill tick starved for {} ticks (lastTick={}, now={}); failing {}",
+                starvedTicks, active.lastGameTick, currentTick, skillName
+        );
+        failStarvedActiveSkill();
+        return snapshot();
+    }
+
+    private void failStarvedActiveSkill() {
+        // Capture helper: lets the compiler infer P from the wildcard-typed
+        // field so registration.skill().cancel(context, parameters) type-checks.
+        failStarvedActiveSkill(active);
+    }
+
+    private <P> void failStarvedActiveSkill(Active<P> starved) {
+        if (starved == null) {
+            return;
+        }
+        if (starved.atSafeCheckpoint) {
+            try {
+                starved.registration.skill().cancel(starved.lastContext, starved.parameters);
+            } catch (Exception exception) {
+                MinecraftAiCompanion.LOGGER.debug(
+                        "Starved skill cancel threw for {}", skillName, exception
+                );
+            }
+        }
+        finish(SkillResult.failed(SKILL_TICK_STARVED));
     }
 
     /**
@@ -794,9 +846,38 @@ public final class SkillSupervisor implements AutoCloseable {
             case SAFE_IDLE -> State.SAFE_IDLE;
         };
         activeSkillEndedHandoff = active != null;
+        // FIX17 (P16): rewrite the task_checkpoint row to a terminal marker so
+        // an execution that ends without a fresh skill checkpoint (tick
+        // starvation, abrupt cancel, model disconnect) never lingers as a
+        // frozen intermediate phase in the table.
+        dispatchTerminalCheckpoint(result);
         active = null;
         cancelPending = false;
         disconnectedPending = false;
+    }
+
+    private void dispatchTerminalCheckpoint(SkillResult result) {
+        final Active<?> ended = active;
+        if (ended == null || closed.get()) {
+            return;
+        }
+        final String failureCode = result.failure()
+                .map(SkillFailure::code)
+                .orElse("");
+        final String terminalPayload = String.format(
+                java.util.Locale.ROOT,
+                "{\"supervisorTerminal\":true,\"status\":\"%s\",\"failure\":\"%s\"}",
+                result.status().name(),
+                failureCode
+        );
+        dispatchCheckpoint(new CheckpointSubmission(
+                skillName,
+                boundGoalRevision,
+                boundWorldRevision,
+                checkpointSequence + 1,
+                ended.lastGameTick,
+                new SkillCheckpoint(1, terminalPayload)
+        ));
     }
 
     private StartOutcome rejectedStart(SkillFailure failure) {

@@ -12,9 +12,17 @@ public record SkillRuntimePolicy(
         int maxConsecutiveNoProgressTicks,
         double hardcoreRiskThreshold,
         double disconnectedRiskThreshold,
-        int maxConsecutiveTickBudgetBreaches
+        int maxConsecutiveTickBudgetBreaches,
+        int skillTickStarvationTicks
 ) {
     private static final int DEFAULT_CONSECUTIVE_BUDGET_BREACHES = 3;
+    /**
+     * Server ticks an active skill may go without a {@code tick()} call before
+     * the supervisor fails it as starved (P16). 600 ticks == 30 s at 20 TPS:
+     * long enough to ignore a single cold-start stall, short enough to recover
+     * an agent that would otherwise freeze for ~27 minutes.
+     */
+    private static final int DEFAULT_TICK_STARVATION_TICKS = 600;
 
     public static final SkillRuntimePolicy DEFAULT = new SkillRuntimePolicy(
             Duration.ofMillis(2),
@@ -22,7 +30,8 @@ public record SkillRuntimePolicy(
             200,
             0.35,
             0.15,
-            DEFAULT_CONSECUTIVE_BUDGET_BREACHES
+            DEFAULT_CONSECUTIVE_BUDGET_BREACHES,
+            DEFAULT_TICK_STARVATION_TICKS
     );
 
     public SkillRuntimePolicy {
@@ -38,6 +47,11 @@ public record SkillRuntimePolicy(
         if (maxConsecutiveTickBudgetBreaches < 1) {
             throw new IllegalArgumentException(
                 "maxConsecutiveTickBudgetBreaches must be positive"
+            );
+        }
+        if (skillTickStarvationTicks < 1) {
+            throw new IllegalArgumentException(
+                "skillTickStarvationTicks must be positive"
             );
         }
     }
@@ -60,7 +74,8 @@ public record SkillRuntimePolicy(
             maxConsecutiveNoProgressTicks,
             hardcoreRiskThreshold,
             disconnectedRiskThreshold,
-            DEFAULT_CONSECUTIVE_BUDGET_BREACHES
+            DEFAULT_CONSECUTIVE_BUDGET_BREACHES,
+            DEFAULT_TICK_STARVATION_TICKS
         );
     }
 
