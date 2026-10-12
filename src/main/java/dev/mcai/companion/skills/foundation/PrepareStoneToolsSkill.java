@@ -35,6 +35,8 @@ import dev.mcai.companion.skills.interaction.InteractionSkillFrame;
 import dev.mcai.companion.skills.interaction.InteractionSkillFrameSource;
 import dev.mcai.companion.skills.interaction.ObservedBlockTarget;
 import dev.mcai.companion.skills.inventory.CraftRecipeParameters;
+import dev.mcai.companion.skills.inventory.EquipmentTarget;
+import dev.mcai.companion.skills.inventory.EquipItemParameters;
 import dev.mcai.companion.skills.inventory.InventoryOperationResult;
 import dev.mcai.companion.skills.inventory.InventorySkillActuator;
 import java.util.Comparator;
@@ -73,6 +75,10 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     private static final int MAXIMUM_AIM_TICKS = 80;
     private static final int MAXIMUM_MENU_WAIT_TICKS = 40;
     private static final int MAXIMUM_RECIPE_WAIT_TICKS = 80;
+    private static final int MAXIMUM_SUPPORT_SCANS = 24;
+    private static final int MAXIMUM_SUPPORT_AIM_TICKS = 80;
+    private static final int MAXIMUM_TABLE_PLACEMENT_ATTEMPTS = 3;
+    private static final int MAXIMUM_PLACED_CONFIRM_TICKS = 40;
     private static final int MAXIMUM_INVENTORY_CONFIRM_TICKS = 100;
     private static final int MAXIMUM_REMEMBERED_TABLE_AIM_TICKS = 20;
     private static final double RELIABLE_TABLE_INTERACTION_DISTANCE = 3.75;
@@ -166,6 +172,14 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     private long scanObservationRevision = -1L;
     private boolean awaitingScanObservation;
     private VisibleBlockFace selectedTable;
+    private VisibleBlockFace selectedSupport;
+    private BlockCoordinate expectedTablePosition;
+    private int tablePlacementAttempts;
+    private float supportScanBaseYaw;
+    private int supportScans;
+    private long nextSupportScanTick = -1;
+    private long supportObservationRevision = -1L;
+    private boolean awaitingSupportObservation;
     private GatherVisibleBlockClusterParameters gatheringParameters;
     private MoveToSkill tableMovement;
     private MoveToParameters tableMovementParameters;
@@ -317,6 +331,10 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         startedAtTick = context.gameTick();
         phaseStartedAtTick = context.gameTick();
         selectedTable = null;
+        selectedSupport = null;
+        expectedTablePosition = null;
+        tablePlacementAttempts = 0;
+        supportScans = 0;
         gatheringParameters = null;
         tableMovement = null;
         tableMovementParameters = null;
@@ -494,6 +512,10 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
             case CONFIRM_COBBLESTONE ->
                     confirmCobblestone(context, frame);
             case FIND_TABLE -> findTable(context, frame);
+            case FIND_SUPPORT -> findSupport(context, frame);
+            case AIM_SUPPORT -> aimSupport(context, frame);
+            case PLACE_TABLE -> placeTable(context, frame);
+            case CONFIRM_PLACED -> confirmPlaced(context, frame);
             case MOVE_TO_TABLE -> moveToTable(context, frame);
             case DIG_DOWN -> digDown(context, frame);
             case ENTER_STAIR -> enterStair(context, frame);
@@ -1219,6 +1241,195 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         return SkillTickResult.running(false, true);
     }
 
+    private SkillTickResult beginFindSupport(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        phase = Phase.FIND_SUPPORT;
+        phaseStartedAtTick = context.gameTick();
+        nextSupportScanTick = context.gameTick();
+        supportScans = 0;
+        supportObservationRevision = frame.observationRevision();
+        awaitingSupportObservation = false;
+        supportScanBaseYaw = yaw(frame.lookDirection());
+        selectedSupport = null;
+        return SkillTickResult.running(true, true);
+    }
+
+    private SkillTickResult findSupport(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        final Optional<VisibleBlockFace> support =
+                PrepareBasicCraftingSkill.selectPlacementSupport(
+                        frame,
+                        Set.of()
+                );
+        if (support.isPresent()) {
+            selectedSupport = support.orElseThrow();
+            return transition(context, Phase.AIM_SUPPORT);
+        }
+        if (supportScans >= MAXIMUM_SUPPORT_SCANS) {
+            return fail(NAME + ".no_table_support_visible");
+        }
+        if (awaitingSupportObservation
+                && frame.observationRevision()
+                    <= supportObservationRevision) {
+            return SkillTickResult.running(false, true);
+        }
+        if (awaitingSupportObservation) {
+            awaitingSupportObservation = false;
+        }
+        if (context.gameTick() < nextSupportScanTick) {
+            return SkillTickResult.running(false, true);
+        }
+        final int yawIndex = supportScans / 3;
+        final int pitchIndex = supportScans % 3;
+        final float pitch = switch (pitchIndex) {
+            case 1 -> -25.0F;
+            case 2 -> 25.0F;
+            default -> 0.0F;
+        };
+        final float yaw = wrapDegrees(
+                supportScanBaseYaw + yawIndex * 45.0F
+        );
+        if (!core.stop().accepted()
+                || !core.look(new LookIntent(yaw, pitch)).accepted()) {
+            return fail(NAME + ".support_scan_rejected");
+        }
+        supportScans++;
+        supportObservationRevision = frame.observationRevision();
+        awaitingSupportObservation = true;
+        nextSupportScanTick = context.gameTick() + SCAN_INTERVAL_TICKS;
+        return SkillTickResult.running(true, true);
+    }
+
+    private SkillTickResult aimSupport(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        if (selectedSupport == null) {
+            return beginFindSupport(context, frame);
+        }
+        final Optional<VisibleBlockFace> crosshair =
+                interactionFrames.currentCrosshairBlock();
+        if (crosshair.isPresent()
+                && sameBlockAndFace(
+                        crosshair.orElseThrow(),
+                        selectedSupport
+                )) {
+            return transition(context, Phase.PLACE_TABLE);
+        }
+        if (context.gameTick() - phaseStartedAtTick
+                >= MAXIMUM_SUPPORT_AIM_TICKS) {
+            selectedSupport = null;
+            return beginFindSupport(context, frame);
+        }
+        return aimAt(frame, selectedSupport.hitPosition());
+    }
+
+    private SkillTickResult placeTable(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        final Optional<VisibleBlockFace> crosshair =
+                interactionFrames.currentCrosshairBlock();
+        if (crosshair.isEmpty()
+                || selectedSupport == null
+                || !sameBlockAndFace(
+                        crosshair.orElseThrow(),
+                        selectedSupport
+                )) {
+            return transition(context, Phase.AIM_SUPPORT);
+        }
+        if (!frame.mainHand().itemId().equals(CRAFTING_TABLE)
+                || frame.mainHand().count() <= 0) {
+            final InventoryOperationResult equipped = inventory.equip(
+                    new EquipItemParameters(
+                            CRAFTING_TABLE,
+                            EquipmentTarget.MAINHAND
+                    )
+            );
+            if (!equipped.succeeded()) {
+                return fail(NAME + ".table_equip_failed");
+            }
+            return SkillTickResult.running(true, true);
+        }
+        final VisibleBlockFace actual = crosshair.orElseThrow();
+        final ActionOutcome outcome = interactions.useOnBlock(
+                ActionHand.MAIN_HAND,
+                target(actual)
+        );
+        tablePlacementAttempts++;
+        if (!outcome.accepted()) {
+            return fail(NAME + ".table_place_rejected");
+        }
+        expectedTablePosition = new BlockCoordinate(
+                actual.block().x(),
+                actual.block().y() + 1,
+                actual.block().z()
+        );
+        selectedSupport = null;
+        selectedTable = null;
+        return transition(context, Phase.CONFIRM_PLACED);
+    }
+
+    private SkillTickResult confirmPlaced(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        final Optional<VisibleBlockFace> table = visibleTable(frame);
+        if (table.isPresent()) {
+            selectedTable = table.orElseThrow();
+            return transition(context, Phase.FIND_TABLE);
+        }
+        final Optional<VisibleBlockFace> crosshair =
+                interactionFrames.currentCrosshairBlock()
+                        .filter(PrepareStoneToolsSkill::isCraftingTable);
+        if (crosshair.isPresent()) {
+            selectedTable = crosshair.orElseThrow();
+            return transition(context, Phase.OPEN_TABLE);
+        }
+        if (context.gameTick() - phaseStartedAtTick
+                >= MAXIMUM_PLACED_CONFIRM_TICKS) {
+            if (hasOwnedItem(frame, CRAFTING_TABLE)
+                    && tablePlacementAttempts
+                        < MAXIMUM_TABLE_PLACEMENT_ATTEMPTS) {
+                return beginFindSupport(context, frame);
+            }
+            return fail(NAME + ".table_placement_unconfirmed");
+        }
+        if (expectedTablePosition != null) {
+            return aimAt(
+                    frame,
+                    new PerceptionVec3(
+                            expectedTablePosition.x() + 0.5,
+                            expectedTablePosition.y() + 0.5,
+                            expectedTablePosition.z() + 0.5
+                    )
+            );
+        }
+        return SkillTickResult.running(false, true);
+    }
+
+    private SkillTickResult placeOwnedTableOrFail(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        if (hasOwnedItem(frame, CRAFTING_TABLE)) {
+            return beginFindSupport(context, frame);
+        }
+        return fail(NAME + ".visible_table_not_found");
+    }
+
+    private static boolean sameBlockAndFace(
+            final VisibleBlockFace first,
+            final VisibleBlockFace second
+    ) {
+        return first.block().equals(second.block())
+                && first.face().equals(second.face());
+    }
+
     private SkillTickResult scan(
             final SkillContext context,
             final CoreSkillFrame frame,
@@ -1233,7 +1444,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
              */
             return scanningPhase == Phase.FIND_STONE
                     ? beginDigDown(context)
-                    : fail(NAME + ".visible_table_not_found");
+                    : placeOwnedTableOrFail(context, frame);
         }
         if (awaitingScanObservation
                 && frame.observationRevision()
@@ -1600,6 +1811,10 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         GATHER_STONE,
         CONFIRM_COBBLESTONE,
         FIND_TABLE,
+        FIND_SUPPORT,
+        AIM_SUPPORT,
+        PLACE_TABLE,
+        CONFIRM_PLACED,
         MOVE_TO_TABLE,
         AIM_TABLE,
         OPEN_TABLE,
