@@ -97,6 +97,17 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
     private long canopyBreakCompletedAtTick;
     private ExploreForObservedTargetSkill explorer;
     private ExploreForTargetParameters exploreParameters;
+    /*
+     * P21 wood-gather diagnostics. {@code no_wood_collected} is a bare terminal
+     * code that cannot say why the body walked away empty-handed: whether the
+     * perception layer never delivered a wood face, every candidate seed was
+     * rejected by the gatherer preconditions, no canopy was ever broken, or the
+     * world model never offered a reachable convertible-wood POI. These counters
+     * snapshot the last observation so the terminal code can disambiguate.
+     */
+    private int diagnosticsWoodFacesSeen = 0;
+    private int diagnosticsCanopyBinds = 0;
+    private double diagnosticsExplorationBestDist = -1.0;
 
     public GatherNearbyWoodSkill(
             final UUID expectedPlayerId,
@@ -176,6 +187,9 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         canopyBreakCompletedAtTick = -1L;
         explorer = null;
         exploreParameters = null;
+        diagnosticsWoodFacesSeen = 0;
+        diagnosticsCanopyBinds = 0;
+        diagnosticsExplorationBestDist = -1.0;
         rejectedSeeds.clear();
     }
 
@@ -234,6 +248,8 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                         "{\"phase\":\"%s\",\"elapsedTicks\":%d,"
                                 + "\"scanTurns\":%d,\"gatherFailures\":%d,"
                                 + "\"initialWood\":%d,\"currentWood\":%d,"
+                                + "\"woodFacesSeen\":%d,\"rejectedSeeds\":%d,"
+                                + "\"canopyBinds\":%d,\"explorationBestDist\":%s,"
                                 + "\"gatherCheckpoint\":\"%s\","
                                 + "\"explorationCheckpoint\":\"%s\","
                                 + "\"canopyCheckpoint\":\"%s\"}",
@@ -243,6 +259,15 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                         gatherFailures,
                         initialWoodCount,
                         frame == null ? -1 : woodCount(frame),
+                        diagnosticsWoodFacesSeen,
+                        rejectedSeeds.size(),
+                        diagnosticsCanopyBinds,
+                        diagnosticsExplorationBestDist < 0.0
+                                ? "\"-\""
+                                : String.format(
+                                        Locale.ROOT,
+                                        "%.3f",
+                                        diagnosticsExplorationBestDist),
                         gatherCheckpoint,
                         explorationCheckpoint,
                         canopyCheckpoint
@@ -319,7 +344,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
              * and scanning cannot reset its way out of the failure budget.
              */
             if (++gatherFailures >= MAXIMUM_GATHER_FAILURES) {
-                return fail(context, NAME + ".no_wood_collected");
+                return failNoWoodCollected(context);
             }
             if (phase == Phase.EXPLORING) {
                 return recoverStalledExploration(context, frame);
@@ -356,6 +381,17 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         final Optional<InteractionSkillFrame> interaction =
                 currentInteraction(frame);
         if (interaction.isPresent()) {
+            final InteractionSkillFrame visible = interaction.orElseThrow();
+            final long visibleWood = visible.visibleBlockFaces()
+                    .stream()
+                    .filter(GatherNearbyWoodSkill::isWood)
+                    .filter(face -> !rejectedSeeds.contains(new GridPos(
+                            face.block().x(),
+                            face.block().y(),
+                            face.block().z()
+                    )))
+                    .count();
+            diagnosticsWoodFacesSeen += (int) visibleWood;
             final Optional<VisibleBlockFace> underfootLeaves =
                     interaction.orElseThrow()
                             .visibleBlockFaces()
@@ -465,6 +501,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         }
         canopyStartY = frame.position().y();
         canopyBreaker.start(context, canopyBreakParameters);
+        diagnosticsCanopyBinds++;
         phase = Phase.BREAKING_CANOPY;
         return SkillTickResult.running(true, true);
     }
@@ -630,7 +667,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
             return finishOrFail(
                     context,
                     ownedFrame().orElse(frame),
-                    NAME + ".no_wood_collected"
+                    currentNoWoodCode(context)
             );
         }
         if (result.status() == SkillTickResult.Status.FAILED) {
@@ -766,6 +803,84 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         failure = SkillFailure.of(code);
         phase = Phase.FAILED;
         return SkillTickResult.failed(failure);
+    }
+
+    /**
+     * P21 diagnostic helper: builds the disambiguated {@code no_wood_collected}
+     * code from the last observation's counters, best-effort capturing the
+     * exploration travel's {@code bestDistance} (POI reachability) when the
+     * explorer is still live. The bare {@code no_wood_collected} token is kept
+     * so existing monitors keep matching.
+     */
+    private String currentNoWoodCode(final SkillContext context) {
+        if (diagnosticsExplorationBestDist < 0.0
+                && explorer != null
+                && exploreParameters != null) {
+            try {
+                final String payload = explorer.checkpoint(
+                        context, exploreParameters).payload();
+                final java.util.regex.Matcher matcher = java.util.regex.Pattern
+                        .compile("\"bestDistance\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)")
+                        .matcher(payload);
+                if (matcher.find()) {
+                    diagnosticsExplorationBestDist = Double.parseDouble(
+                            matcher.group(1));
+                }
+            } catch (RuntimeException ignored) {
+                // best effort: leave -1
+            }
+        }
+        final int d = diagnosticsExplorationBestDist < 0.0
+                ? -1
+                : (int) Math.round(diagnosticsExplorationBestDist * 10.0);
+        return noWoodCollectedCode(
+                diagnosticsWoodFacesSeen,
+                rejectedSeeds.size(),
+                diagnosticsCanopyBinds,
+                d
+        );
+    }
+
+    private SkillTickResult failNoWoodCollected(
+            final SkillContext context
+    ) {
+        return fail(context, currentNoWoodCode(context));
+    }
+
+    /**
+     * P21 diagnostic helper: disambiguates an empty wood gather by appending
+     * the last observation's counters to the still-monitorable
+     * {@code no_wood_collected} token:
+     * <ul>
+     *   <li>{@code w} = raw wood faces seen during scanning (perception
+     *       delivery);</li>
+     *   <li>{@code r} = wood seeds bound but rejected by the gatherer's
+     *       preconditions;</li>
+     *   <li>{@code c} = canopy breaks started;</li>
+     *   <li>{@code d} = exploration best distance x10 (POI reachability;
+     *       -1 unknown).</li>
+     * </ul>
+     * Interpretation: {@code w0} = perception never delivered a wood face
+     * (leaves occluding logs / sparse sampling); {@code w>0 r>0} = wood seen
+     * but every seed precondition-rejected; {@code c0} = no canopy handling
+     * attempted while standing under one; {@code d~80} = world model never
+     * yielded a reachable convertible_wood POI.
+     */
+    static String noWoodCollectedCode(
+            final int woodFacesSeen,
+            final int rejectedSeeds,
+            final int canopyBinds,
+            final int bestDistX10
+    ) {
+        return NAME
+                + ".no_wood_collected.w"
+                + woodFacesSeen
+                + ".r"
+                + rejectedSeeds
+                + ".c"
+                + canopyBinds
+                + ".d"
+                + bestDistX10;
     }
 
     private void cancelChildren(final SkillContext context) {
