@@ -1271,10 +1271,29 @@ public final class CompanionRuntime {
              * silently undone.  The bounded backoff prevents a broken world
              * border or permanently invalid save from creating a per-tick
              * spawn loop, and no model or world mutation is involved.
+             *
+             * A FAILED session has to be retired before a replacement can be
+             * admitted, because requestSpawn() rejects FAILED outright with
+             * "failed_remove_first".  That rejection is deliberate: a body
+             * nobody retired must not be swapped out from under whatever still
+             * refers to it.  The human-login path honours it by removing
+             * first inside ensureSpawnNear().  This unattended path used to
+             * skip that step, so the request was refused for the same reason
+             * on this attempt and on every later bounded attempt, and a
+             * closed connection left the companion permanently dead until a
+             * player logged in - exactly the "the AI stops working while
+             * nobody is online" field symptom.  Mirror the login path here.
+             *
+             * Retiring a FAILED session cannot disturb a live body: a failed
+             * session owns neither a ServerPlayer nor a pending spawn, both
+             * fields are already null by the time the failure is recorded, and
+             * closeOwnedResources() is null-safe.  Hardcore finality stays
+             * guarded here and again inside startSpawn().
              */
             if (embodiment.state() == SessionState.FAILED
                     && !runtime.worldData().hardcoreDead()
                     && currentTick >= bodySpawnRetryAfterTick) {
+                AiPlayerManager.requestRemove(server);
                 final AiPlayerManager.OperationResult respawn =
                         AiPlayerManager.requestSpawn(server);
                 bodySpawnRetryAfterTick = currentTick
