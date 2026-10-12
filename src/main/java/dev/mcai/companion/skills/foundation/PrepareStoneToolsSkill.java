@@ -379,7 +379,8 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                                 + "\"digGather\":%s,"
                                 + "\"stairColumnMined\":%d,"
                                 + "\"stairStepX\":%d,"
-                                + "\"stairStepZ\":%d}",
+                                + "\"stairStepZ\":%d,"
+                                + "\"gather\":%s}",
                         phase.name(),
                         scanTurns,
                         Math.max(0L, context.gameTick() - startedAtTick),
@@ -392,9 +393,32 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                         digGather,
                         stairColumnMined,
                         stairStepX,
-                        stairStepZ
+                        stairStepZ,
+                        gatherCheckpointPayload(context)
                 )
         );
+    }
+
+    /**
+     * Inlines the cluster gatherer's own checkpoint while it is driving a
+     * stone burst. The gatherer already publishes its internal phase
+     * (APPROACHING / AIMING / MINING / COLLECTING / SCANNING) plus the seed,
+     * the current target, the number of blocks mined and the approach probe
+     * counters, but the parent row used to reduce all of that to a single
+     * {@code "gathering":true} boolean, which made a stall inside the child
+     * completely invisible. Returning the child payload verbatim keeps the
+     * persisted {@code task_checkpoint} row self-contained.
+     */
+    private String gatherCheckpointPayload(final SkillContext context) {
+        if (phase != Phase.GATHER_STONE || gatheringParameters == null) {
+            return "null";
+        }
+        try {
+            return gatherer.checkpoint(context, gatheringParameters)
+                    .payload();
+        } catch (RuntimeException exception) {
+            return "null";
+        }
     }
 
     @Override
