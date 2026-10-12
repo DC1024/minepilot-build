@@ -60,6 +60,24 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
     private static final int SEARCH_STEP = 8;
     private static final int MAXIMUM_DESCENT_TICKS = 100;
     /**
+     * FIX23: cap on consecutive canopy breaks (without any wood progress) before
+     * the scan phase gives up clearing leaves and forces {@code beginExploration}
+     * instead. The old code broke underfoot leaves on every scan tick but never
+     * advanced {@code scanTurns}, so a bot standing in a canopy looped on canopy
+     * breaks forever (observed terminal: {@code no_wood_collected.w0.r0.c1200.d-1})
+     * and never reached the exploration branch that would move it to a trunk.
+     */
+    private static final int CANOPY_BREAKS_BEFORE_EXPLORE = 8;
+    /**
+     * FIX23: ticks of danger (riskScore or frame.danger above the safety
+     * threshold) that may be tolerated before the skill hard-fails with
+     * {@code danger_detected}. A single-tick mob/risk spike used to abort a whole
+     * multi-minute gather and let the supervisor restart it into the same danger;
+     * a short grace lets transient spikes pass (brief pause) while still failing on
+     * sustained danger.
+     */
+    private static final int DANGER_GRACE_TICKS = 30;
+    /**
      * Ticks without a single new wood item before the skill stops trusting the
      * current phase. Applies in every phase (not just GATHERING/EXPLORING):
      * a canopy that will not yield used to burn the whole MAXIMUM_TICKS budget
@@ -124,6 +142,12 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
      */
     private final Map<String, Integer> diagnosticsRejectReasons = new HashMap<>();
     private static final String GATHERER_PREFIX = "gather_visible_block_cluster.";
+    /*
+     * FIX23 counters. {@code canopyBreaksSinceProgress} bounds the canopy-clear
+     * loop; {@code dangerTicks} implements the danger grace window.
+     */
+    private int canopyBreaksSinceProgress = 0;
+    private int dangerTicks = 0;
 
     public GatherNearbyWoodSkill(
             final UUID expectedPlayerId,
@@ -208,6 +232,8 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         diagnosticsExplorationBestDist = -1.0;
         rejectedSeeds.clear();
         diagnosticsRejectReasons.clear();
+        canopyBreaksSinceProgress = 0;
+        dangerTicks = 0;
     }
 
     @Override
@@ -324,9 +350,29 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         if (frame == null) {
             return fail(context, NAME + ".body_unavailable");
         }
-        final Optional<SkillFailure> unsafe = safetyFailure(context, frame);
-        if (unsafe.isPresent()) {
-            return fail(context, unsafe.orElseThrow().code());
+        final double maximumDanger = context.hardcore() ? 0.10 : 0.25;
+        final double dangerLevel = Math.max(context.riskScore(), frame.danger());
+        if (frame.inWater()) {
+            return fail(context, NAME + ".unsafe_pose");
+        }
+        if (dangerLevel > maximumDanger) {
+            /*
+             * FIX23 danger grace: a transient single-tick risk/mob spike must
+             * not abort a whole multi-minute gather and let the supervisor
+             * restart it into the same danger (observed restart-loop after
+             * {@code danger_detected}). Pause briefly and only hard-fail on
+             * sustained danger.
+             */
+            if (++dangerTicks >= DANGER_GRACE_TICKS) {
+                return fail(context, NAME + ".danger_detected");
+            }
+            core.stop();
+            return SkillTickResult.running(false, true);
+        }
+        dangerTicks = 0;
+        final float minimumHealth = context.hardcore() ? 0.60F : 0.35F;
+        if (frame.health() / frame.maxHealth() < minimumHealth) {
+            return fail(context, NAME + ".health_too_low");
         }
         if (context.gameTick() - startedAtTick >= MAXIMUM_TICKS) {
             return finishOrFail(context, frame, NAME + ".timed_out");
@@ -335,6 +381,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         if (currentWoodCount > lastProgressWoodCount) {
             lastProgressWoodCount = currentWoodCount;
             lastWoodProgressAtTick = context.gameTick();
+            canopyBreaksSinceProgress = 0;
         }
         /*
          * Phase-independent no-progress watchdog.
@@ -411,24 +458,14 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                     )))
                     .count();
             diagnosticsWoodFacesSeen += (int) visibleWood;
-            final Optional<VisibleBlockFace> underfootLeaves =
-                    interaction.orElseThrow()
-                            .visibleBlockFaces()
-                            .stream()
-                            .filter(face -> isUnderfootLeaves(face, frame))
-                            .min(Comparator.comparingDouble(
-                                    VisibleBlockFace::distance
-                            ));
-            if (underfootLeaves.isPresent()) {
-                return beginCanopyBreak(
-                        context,
-                        frame,
-                        interaction.orElseThrow(),
-                        underfootLeaves.orElseThrow()
-                );
-            }
-            final Optional<VisibleBlockFace> wood = interaction.orElseThrow()
-                    .visibleBlockFaces()
+            /*
+             * FIX23: bind a visible log BEFORE clearing the leaf we stand on.
+             * The previous order short-circuited to canopy break whenever
+             * underfoot leaves existed, so a bot in a canopy never reached the
+             * trunk and looped on canopy breaks (w0.r0.c1200.d-1). Mining the
+             * visible log is always the higher-value action.
+             */
+            final Optional<VisibleBlockFace> wood = visible.visibleBlockFaces()
                     .stream()
                     .filter(GatherNearbyWoodSkill::isWood)
                     .filter(face -> !rejectedSeeds.contains(new GridPos(
@@ -444,8 +481,8 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
             if (wood.isPresent()) {
                 final VisibleBlockFace seed = wood.orElseThrow();
                 gatherParameters = new GatherVisibleBlockClusterParameters(
-                        interaction.orElseThrow().dimension(),
-                        observedTarget(interaction.orElseThrow(), seed),
+                        visible.dimension(),
+                        observedTarget(visible, seed),
                         seed.blockTypeId(),
                         MAXIMUM_BLOCKS,
                         12.0,
@@ -465,6 +502,31 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                         seed.block().z()
                 ));
                 gatherParameters = null;
+            }
+            final Optional<VisibleBlockFace> underfootLeaves =
+                    visible.visibleBlockFaces()
+                            .stream()
+                            .filter(face -> isUnderfootLeaves(face, frame))
+                            .min(Comparator.comparingDouble(
+                                    VisibleBlockFace::distance
+                            ));
+            if (underfootLeaves.isPresent()) {
+                /*
+                 * FIX23: bound canopy clearing. After enough breaks without
+                 * wood progress, explore for a reachable trunk instead of
+                 * looping on the same leaf tile (the old code never advanced
+                 * scanTurns from this branch, so exploration was unreachable).
+                 */
+                if (canopyBreaksSinceProgress >= CANOPY_BREAKS_BEFORE_EXPLORE) {
+                    return beginExploration(context, frame);
+                }
+                canopyBreaksSinceProgress++;
+                return beginCanopyBreak(
+                        context,
+                        frame,
+                        visible,
+                        underfootLeaves.orElseThrow()
+                );
             }
         }
         if (scanTurns >= MAXIMUM_SCAN_TURNS) {
