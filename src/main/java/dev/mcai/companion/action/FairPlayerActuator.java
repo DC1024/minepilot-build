@@ -45,6 +45,13 @@ import net.minecraft.world.phys.Vec3;
  * vanilla {@link ServerPlayer#travel(Vec3)} collision/physics, while player
  * input, rotation and sprint transitions pass through the normal play-packet
  * listener.</p>
+ *
+ * <p><strong>Known deviation.</strong> {@link #useOnBlock} writes through
+ * {@link ServerPlayerGameMode#useItemOn} directly for an empty main hand,
+ * because no clientless packet reaches vanilla {@code useWithoutItem}. That is
+ * the only place in {@code src/main} that bypasses the play-packet listener
+ * for a player action, and the premise behind it is unverified here; see the
+ * comment on that branch and {@code FairActuatorExceptionContractTest}.</p>
  */
 public final class FairPlayerActuator {
     private static final double INPUT_EPSILON = 1.0E-5;
@@ -301,14 +308,25 @@ public final class FairPlayerActuator {
         final int beforeCount = item.getCount();
         final BlockHitResult hit = blockHit(target);
         /*
-         * A clientless connection has no empty-hand item-use packet to feed
-         * through ServerGamePacketListenerImpl.  The listener's packet
-         * method is intentionally guarded by the client item path, so an
-         * empty main hand would be reported as dispatched while vanilla
-         * useWithoutItem (buttons, doors, containers, levers, etc.) never
-         * runs.  The fair access/ray checks above have already reproduced
-         * the complete client-side target contract; invoke the same vanilla
-         * ServerPlayerGameMode transaction for this one headless case.
+         * The one documented deviation from "only send play packets".
+         *
+         * There is no clientless packet that reaches vanilla useWithoutItem
+         * for an empty main hand: buttons, doors, containers and levers all
+         * travel the item-use path, which a headless connection does not
+         * reproduce.  The access and ray checks above reproduce the complete
+         * client-side target contract, so this invokes the same vanilla
+         * ServerPlayerGameMode transaction directly for that one case,
+         * instead of sending a packet that would be accepted and then
+         * silently do nothing.
+         *
+         * This premise has NOT been verified against decompiled vanilla
+         * sources - that needs Forge's decompile task and JDK 25, neither of
+         * which this build environment provides.  It is the only place in
+         * src/main that writes through ServerPlayerGameMode; if vanilla is
+         * ever confirmed to accept an empty-hand use packet, that packet
+         * path should replace this branch.
+         * FairActuatorExceptionContractTest pins that this stays the only
+         * such write, so a second bypass cannot appear unnoticed.
          */
         if (item.isEmpty() && minecraftHand == InteractionHand.MAIN_HAND) {
             final InteractionResult result = player.gameMode.useItemOn(
