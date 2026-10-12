@@ -201,6 +201,18 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     private int diagnosticsStoneFaces = -1;
     private int diagnosticsStoneFacesKept = -1;
     private int diagnosticsTableFaces = -1;
+    /*
+     * Stair-column descent diagnostics. When the neighbouring step column
+     * offers nothing mineable the skill fails with {@code stair_column_empty},
+     * but that bare code cannot tell whether the column was genuinely open,
+     * occluded by perception sparseness, killed by the eye-height filter, or
+     * simply beyond the stair reach. These three counters snapshot the last
+     * per-tick observation of the chosen column so the terminal failure code
+     * can disambiguate the real cause.
+     */
+    private int diagnosticsStairColumnFaces = -1;
+    private int diagnosticsStairColumnEyes = -1;
+    private int diagnosticsStairColumnReach = -1;
 
     public PrepareStoneToolsSkill(
             final UUID expectedPlayerId,
@@ -398,6 +410,9 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                                 + "\"stairColumnMined\":%d,"
                                 + "\"stairStepX\":%d,"
                                 + "\"stairStepZ\":%d,"
+                                + "\"stairColumnFaces\":%d,"
+                                + "\"stairColumnEyes\":%d,"
+                                + "\"stairColumnReach\":%d,"
                                 + "\"gather\":%s}",
                         phase.name(),
                         scanTurns,
@@ -412,6 +427,9 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                         stairColumnMined,
                         stairStepX,
                         stairStepZ,
+                        diagnosticsStairColumnFaces,
+                        diagnosticsStairColumnEyes,
+                        diagnosticsStairColumnReach,
                         gatherCheckpointPayload(context)
                 )
         );
@@ -700,6 +718,13 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
          * one that keeps the next column reachable from the new floor.
          */
         final int stepTop = feet.y() - 1;
+        recordStairColumnDiagnostics(
+                feet,
+                stairStepX,
+                stairStepZ,
+                frame.eyePosition().y(),
+                interaction.visibleBlockFaces()
+        );
         final Optional<VisibleBlockFace> next = selectStairBlock(
                 feet,
                 stairStepX,
@@ -739,7 +764,11 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         }
         if (context.gameTick() - phaseStartedAtTick
                 >= MAXIMUM_DIG_AIM_TICKS) {
-            return fail(NAME + ".stair_column_empty");
+            return fail(stairColumnEmptyCode(
+                    diagnosticsStairColumnFaces,
+                    diagnosticsStairColumnEyes,
+                    diagnosticsStairColumnReach
+            ));
         }
         /*
          * Steeply down at the middle of the next column's step block. The
@@ -1699,6 +1728,43 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                 .count();
     }
 
+    /**
+     * Snapshots how many faces the chosen step column offered on this tick,
+     * and how far the descent's own filters stripped them down. The three
+     * counters mirror the predicate chain inside
+     * {@link #selectStairBlock}: column membership, then the eye-height
+     * cutoff, then the stair reach cutoff. When the column ends up empty they
+     * reveal which filter was responsible.
+     */
+    private void recordStairColumnDiagnostics(
+            final BlockCoordinate feet,
+            final int stepX,
+            final int stepZ,
+            final double eyeY,
+            final List<VisibleBlockFace> visibleBlockFaces
+    ) {
+        if (stepX == 0 && stepZ == 0) {
+            diagnosticsStairColumnFaces = 0;
+            diagnosticsStairColumnEyes = 0;
+            diagnosticsStairColumnReach = 0;
+            return;
+        }
+        final int columnX = feet.x() + stepX;
+        final int columnZ = feet.z() + stepZ;
+        final List<VisibleBlockFace> inColumn = visibleBlockFaces.stream()
+                .filter(face -> face.block().x() == columnX
+                        && face.block().z() == columnZ)
+                .toList();
+        diagnosticsStairColumnFaces = inColumn.size();
+        final List<VisibleBlockFace> belowEye = inColumn.stream()
+                .filter(face -> face.block().y() < eyeY)
+                .toList();
+        diagnosticsStairColumnEyes = belowEye.size();
+        diagnosticsStairColumnReach = (int) belowEye.stream()
+                .filter(face -> face.distance() <= STAIR_REACH)
+                .count();
+    }
+
     private static Optional<VisibleBlockFace> visibleTable(
             final CoreSkillFrame frame
     ) {
@@ -1718,6 +1784,37 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
      */
     static String stairBlockRejectedCode(final SkillFailure cause) {
         return NAME + ".stair_block_rejected." + cause.code();
+    }
+
+    /**
+     * P20 diagnostic helper: disambiguates an empty step column by appending
+     * the last observation's filter counters to the still-monitorable
+     * {@code stair_column_empty} token. The three numbers are
+     * {@code c}andidate faces in the column, faces that survived the
+     * {@code e}ye-height cutoff, and faces that survived the {@code r}each
+     * cutoff:
+     * <ul>
+     *   <li>{@code c0} — nothing observed in that column at all
+     *       (genuinely open, occluded, or perception sparse);</li>
+     *   <li>{@code c>0 e0} — blocks existed but every one sat at/above the
+     *       eye, so the height filter starved the descent;</li>
+     *   <li>{@code e>0 r0} — within eye height but beyond {@code STAIR_REACH};</li>
+     *   <li>{@code e>0 r>0} — survived both filters yet still empty, which
+     *       points at a selection bug rather than geometry.</li>
+     * </ul>
+     */
+    static String stairColumnEmptyCode(
+            final int candidates,
+            final int eyes,
+            final int reach
+    ) {
+        return NAME
+                + ".stair_column_empty.c"
+                + candidates
+                + ".e"
+                + eyes
+                + ".r"
+                + reach;
     }
 
     private static boolean isCraftingTable(

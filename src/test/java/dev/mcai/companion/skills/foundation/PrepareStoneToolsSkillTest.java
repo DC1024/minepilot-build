@@ -315,4 +315,30 @@ final class PrepareStoneToolsSkillTest {
                 ).contains("stair_block_rejected")
         );
     }
+
+    /*
+     * P20: an empty step column must encode the last observation's filter
+     * counters so the real cause (open column vs. eye-height starved vs.
+     * beyond reach) can be read straight off the failure code. The bare
+     * "stair_column_empty" token is preserved for monitors.
+     */
+    @Test
+    void stairColumnEmptyEncodesFilterCounters() {
+        assertEquals(
+                "prepare_stone_tools.stair_column_empty.c0.e0.r0",
+                PrepareStoneToolsSkill.stairColumnEmptyCode(0, 0, 0)
+        );
+        assertEquals(
+                "prepare_stone_tools.stair_column_empty.c3.e0.r0",
+                PrepareStoneToolsSkill.stairColumnEmptyCode(3, 0, 0)
+        );
+        assertEquals(
+                "prepare_stone_tools.stair_column_empty.c3.e2.r0",
+                PrepareStoneToolsSkill.stairColumnEmptyCode(3, 2, 0)
+        );
+        assertTrue(
+                PrepareStoneToolsSkill.stairColumnEmptyCode(3, 2, 1)
+                        .contains("stair_column_empty")
+        );
+    }
 }
