@@ -187,9 +187,12 @@ public final class ProviderErrorClassifier {
          * never contains "json_schema", and mentionsField() additionally
          * requires a non-identifier boundary, which fails once prose is
          * normalised to underscores. Normalise case and separators and accept
-         * a plain substring hit here so the capability probe can still fall
-         * back to a weaker output contract instead of failing outright.
-         * Reaching this point already requires explicit unsupported wording.
+         * a hit that is bounded by separator characters, so the capability
+         * probe can still fall back to a weaker output contract instead of
+         * failing outright. Reaching this point already requires explicit
+         * unsupported wording; the boundary check keeps an unrelated word
+         * that merely embeds the field name (for example "context window"
+         * for the "text" capability) from triggering a downgrade.
          */
         String normalizedMessage = message
                 .toLowerCase(Locale.ROOT)
@@ -204,15 +207,44 @@ public final class ProviderErrorClassifier {
                 )
                 .filter(field -> isSameOrDescendant(param, field)
                         || mentionsField(message, field)
-                        || normalizedMessage.contains(field)
+                        || mentionsNormalizedField(normalizedMessage, field)
                         || field.indexOf('.') >= 0
                             && (mentionsField(
                                 message,
                                 field.replace('.', '_')
-                            ) || normalizedMessage.contains(
+                            ) || mentionsNormalizedField(
+                                normalizedMessage,
                                 field.replace('.', '_')
                             )))
                 .findFirst();
+    }
+
+    /*
+     * The normalised message uses '_' as the word separator, so only letters
+     * and digits can continue a token: "unsupported_context_window" must not
+     * be read as naming the "text" capability.
+     */
+    private static boolean mentionsNormalizedField(
+            String normalizedMessage,
+            String field
+    ) {
+        int fromIndex = 0;
+        while (fromIndex <= normalizedMessage.length() - field.length()) {
+            int index = normalizedMessage.indexOf(field, fromIndex);
+            if (index < 0) {
+                return false;
+            }
+            int end = index + field.length();
+            boolean boundedBefore = index == 0
+                    || !Character.isLetterOrDigit(normalizedMessage.charAt(index - 1));
+            boolean boundedAfter = end == normalizedMessage.length()
+                    || !Character.isLetterOrDigit(normalizedMessage.charAt(end));
+            if (boundedBefore && boundedAfter) {
+                return true;
+            }
+            fromIndex = index + 1;
+        }
+        return false;
     }
 
     private static boolean isSameOrDescendant(String value, String field) {
