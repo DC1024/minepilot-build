@@ -21,11 +21,27 @@ import org.junit.jupiter.api.Test;
 final class GoalCoordinatorHaltTest {
 
     @Test
-    void aLiveGoalHasNeitherAReasonNorAHold() {
+    void onlyALiveGoalIsWithoutAHold() {
         final GoalCoordinator coordinator =
                 new GoalCoordinator(new InMemoryGoalRevisionStore());
-        assertEquals(Optional.empty(), coordinator.haltReason());
-        assertEquals(Optional.empty(), coordinator.hold());
+
+        /*
+         * A fresh coordinator is IDLE, and IDLE is not a live goal: nobody
+         * owns it, so it already rests in EXTERNAL and autonomy may propose.
+         * Only RUNNING and CANCEL_PENDING are live, and those are the two
+         * that must report nothing.
+         */
+        assertEquals(
+                Optional.empty(),
+                coordinator.haltReason(),
+                "Nothing has stopped yet, so there is no reason to name"
+        );
+        assertEquals(
+                Optional.of(Hold.EXTERNAL),
+                coordinator.hold(),
+                "A never-owned companion rests externally, which is what "
+                        + "lets autonomy propose"
+        );
 
         coordinator.setGoal("砍木头", GoalSource.PLAYER_CHAT);
         assertEquals(Optional.empty(), coordinator.haltReason());
