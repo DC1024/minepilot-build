@@ -395,21 +395,24 @@ final class GatherVisibleBlockClusterSkillTest {
                 !core.looks.isEmpty(),
                 "The body must look down to acquire fair support evidence"
         );
+        /*
+         * P14 deliberately reissues support probes on a four-tick cooldown
+         * when the semantic revision stalls. The retries must remain below
+         * the bounded maximum while the body waits for fair floor evidence.
+         */
+        final String pendingSupportCheckpoint = skill.checkpoint(
+                context(122, false, 0.0),
+                requested
+        ).payload();
         assertTrue(
-                skill.checkpoint(
-                        context(122, false, 0.0),
-                        requested
-                ).payload().contains("\"approachSupportProbes\":1"),
-                "Twenty body ticks over one semantic frame must consume only "
-                        + "one support-observation probe"
+                pendingSupportCheckpoint.contains(
+                        "\"approachSupportProbes\":6"
+                ),
+                "A stalled revision must reissue at the four-tick cadence"
         );
         assertTrue(
-                skill.checkpoint(
-                        context(122, false, 0.0),
-                        requested
-                ).payload().contains("\"unavailable\":0"),
-                "A visible resource must remain bound while a fresh floor "
-                        + "observation is pending"
+                pendingSupportCheckpoint.contains("\"unavailable\":0"),
+                "Six cooldown probes remain below the bounded maximum of eight"
         );
 
         GatheringSkillTestFixtures.withNavigation(
@@ -421,6 +424,127 @@ final class GatherVisibleBlockClusterSkillTest {
         assertEquals(1, core.moves.size());
         assertEquals(1.0, core.moves.getFirst().forward(), 1.0E-9);
         assertEquals(0.0, core.moves.getFirst().strafeLeft(), 1.0E-9);
+    }
+
+    @Test
+    void stalledRevisionReissuesSupportProbeOnCooldownThenStopsAtLimit() {
+        final VisibleBlockFace distant = log(6, 40);
+        final var snapshots =
+                GatheringSkillTestFixtures.withLook(
+                        GatheringSkillTestFixtures.withNavigation(
+                                frames(40, List.of(distant)),
+                                new LocalNavSnapshot(
+                                        DimensionRef.OVERWORLD,
+                                        40,
+                                        List.of()
+                                )
+                        ),
+                        new PerceptionVec3(0.0, 0.0, 1.0)
+                );
+        final var core =
+                new GatheringSkillTestFixtures.RecordingCoreActuator();
+        final var skill = new GatherVisibleBlockClusterSkill(
+                PLAYER_ID,
+                core,
+                snapshots,
+                new GatheringSkillTestFixtures
+                        .RecordingInteractionActuator(),
+                new GatheringSkillTestFixtures.InteractionFrames(
+                        snapshots
+                ),
+                new GatheringSkillTestFixtures.MutableInventory(),
+                immediateCollectionPolicy()
+        );
+        final var requested =
+                new GatherVisibleBlockClusterParameters(
+                        DimensionRef.OVERWORLD,
+                        new ObservedBlockTarget(
+                                40,
+                                6,
+                                64,
+                                0,
+                                BlockFace.WEST
+                        ),
+                        BLOCK_ID,
+                        1,
+                        16.0,
+                        TOOL_ID
+                );
+
+        assertTrue(
+                skill.preconditions(
+                        context(100, false, 0.0),
+                        requested
+                ).isEmpty()
+        );
+        skill.start(context(100, false, 0.0), requested);
+        skill.tick(context(101, false, 0.0), requested);
+        for (long tick = 102; tick <= 104; tick++) {
+            skill.tick(context(tick, false, 0.0), requested);
+        }
+        assertEquals(
+                1,
+                core.looks.size(),
+                "The cooldown must suppress duplicate probes before four ticks"
+        );
+
+        /*
+         * The revision is still 40 at tick 105, so this second look can only
+         * come from P14's cooldown branch rather than revision advancement.
+         */
+        skill.tick(context(105, false, 0.0), requested);
+        assertEquals(
+                2,
+                core.looks.size(),
+                "A stalled revision must reissue after the cooldown"
+        );
+        for (long tick = 106; tick <= 132; tick++) {
+            skill.tick(context(tick, false, 0.0), requested);
+        }
+
+        final String cappedCheckpoint = skill.checkpoint(
+                context(132, false, 0.0),
+                requested
+        ).payload();
+        assertTrue(
+                cappedCheckpoint.contains("\"approachSupportProbes\":8"),
+                "Cooldown retries must stop at the bounded maximum"
+        );
+        assertTrue(
+                cappedCheckpoint.contains("\"unavailable\":0"),
+                "The target remains bound until the next eligible retry"
+        );
+        assertTrue(
+                core.moves.isEmpty(),
+                "A stalled revision must never move without floor evidence"
+        );
+
+        skill.tick(context(133, false, 0.0), requested);
+        final String exhaustedCheckpoint = skill.checkpoint(
+                context(133, false, 0.0),
+                requested
+        ).payload();
+        assertTrue(
+                exhaustedCheckpoint.contains("\"phase\":\"SCANNING\""),
+                "Exhausting bounded probes must return to scanning"
+        );
+        assertTrue(
+                exhaustedCheckpoint.contains("\"unavailable\":1"),
+                "The unsupported target must become unavailable"
+        );
+        assertTrue(
+                exhaustedCheckpoint.contains("\"approachSupportProbes\":0"),
+                "The exhausted probe counter must reset for the next target"
+        );
+        assertEquals(
+                8,
+                core.looks.size(),
+                "No ninth support probe may be dispatched"
+        );
+        assertTrue(
+                core.moves.isEmpty(),
+                "Bounded retry exhaustion must not dispatch movement"
+        );
     }
 
     @Test
