@@ -30,9 +30,11 @@ import dev.mcai.companion.skills.interaction.ObservedBlockTarget;
 import dev.mcai.companion.skills.interaction.BreakBlockParameters;
 import dev.mcai.companion.skills.interaction.BreakBlockSkill;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -108,6 +110,20 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
     private int diagnosticsWoodFacesSeen = 0;
     private int diagnosticsCanopyBinds = 0;
     private double diagnosticsExplorationBestDist = -1.0;
+    /*
+     * P22 wood-gather reject-reason capture. {@code rejectedSeeds} only stores
+     * the rejected seed positions, so a {@code no_wood_collected.w*.r*} terminal
+     * could never say WHY the gatherer refused a seed. This map records, per
+     * reject, the gatherer's precondition failure code (gatherer prefix
+     * stripped), the gatherer's terminal failure code from a bound seed that
+     * FAILED mid-gather, or the synthetic {@code gatherer_stalled} when a bound
+     * seed was cancelled by the no-progress watchdog without ever mining. The
+     * dominant reason is appended to the {@code no_wood_collected} code and
+     * dumped in the live checkpoint JSON so the exact cause is observable
+     * rather than guessed.
+     */
+    private final Map<String, Integer> diagnosticsRejectReasons = new HashMap<>();
+    private static final String GATHERER_PREFIX = "gather_visible_block_cluster.";
 
     public GatherNearbyWoodSkill(
             final UUID expectedPlayerId,
@@ -191,6 +207,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         diagnosticsCanopyBinds = 0;
         diagnosticsExplorationBestDist = -1.0;
         rejectedSeeds.clear();
+        diagnosticsRejectReasons.clear();
     }
 
     @Override
@@ -250,6 +267,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                                 + "\"initialWood\":%d,\"currentWood\":%d,"
                                 + "\"woodFacesSeen\":%d,\"rejectedSeeds\":%d,"
                                 + "\"canopyBinds\":%d,\"explorationBestDist\":%s,"
+                                + "\"rejectedReasons\":\"%s\","
                                 + "\"gatherCheckpoint\":\"%s\","
                                 + "\"explorationCheckpoint\":\"%s\","
                                 + "\"canopyCheckpoint\":\"%s\"}",
@@ -268,6 +286,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                                         Locale.ROOT,
                                         "%.3f",
                                         diagnosticsExplorationBestDist),
+                        rejectedReasonsJson(),
                         gatherCheckpoint,
                         explorationCheckpoint,
                         canopyCheckpoint
@@ -439,6 +458,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                     phase = Phase.GATHERING;
                     return SkillTickResult.running(true, true);
                 }
+                recordReject(rejected.get().code());
                 rejectedSeeds.add(new GridPos(
                         seed.block().x(),
                         seed.block().y(),
@@ -671,6 +691,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
             );
         }
         if (result.status() == SkillTickResult.Status.FAILED) {
+            recordReject(result.failure().orElseThrow().code());
             rejectedSeeds.add(new GridPos(
                     gatherParameters.seed().x(),
                     gatherParameters.seed().y(),
@@ -715,6 +736,7 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
             );
             gatherer.cancel(context, gatherParameters);
             gatherParameters = null;
+            recordReject("gatherer_stalled");
             rejectedSeeds.add(stalledSeed);
         }
         core.stop();
@@ -833,12 +855,68 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
         final int d = diagnosticsExplorationBestDist < 0.0
                 ? -1
                 : (int) Math.round(diagnosticsExplorationBestDist * 10.0);
+        final String reason = dominantRejectReason();
         return noWoodCollectedCode(
                 diagnosticsWoodFacesSeen,
                 rejectedSeeds.size(),
                 diagnosticsCanopyBinds,
-                d
+                d,
+                reason
         );
+    }
+
+    /**
+     * P22 helper: builds a compact {@code reason:count;reason:count} summary of
+     * the gatherer reject reasons recorded since {@code start()}, for the live
+     * checkpoint JSON. Reasons are ordered by frequency (highest first), then
+     * alphabetically for a deterministic tie-break.
+     */
+    private String rejectedReasonsJson() {
+        if (diagnosticsRejectReasons.isEmpty()) {
+            return "";
+        }
+        return diagnosticsRejectReasons.entrySet().stream()
+                .sorted(java.util.Comparator
+                        .<Map.Entry<String, Integer>>comparingInt(
+                                Map.Entry::getValue)
+                        .reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .map(e -> e.getKey() + ":" + e.getValue())
+                .collect(java.util.stream.Collectors.joining(";"));
+    }
+
+    /**
+     * P22 helper: the dominant reject reason, or {@code null} when none was
+     * recorded. Multiple distinct reasons are joined with {@code +} so the
+     * terminal code still exposes the full breakdown (e.g.
+     * {@code seed_not_visible+gatherer_stalled}).
+     */
+    private String dominantRejectReason() {
+        if (diagnosticsRejectReasons.isEmpty()) {
+            return null;
+        }
+        return diagnosticsRejectReasons.entrySet().stream()
+                .sorted(java.util.Comparator
+                        .<Map.Entry<String, Integer>>comparingInt(
+                                Map.Entry::getValue)
+                        .reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .map(java.util.Map.Entry::getKey)
+                .collect(java.util.stream.Collectors.joining("+"));
+    }
+
+    /**
+     * P22 helper: records a gatherer reject reason. The gatherer returns codes
+     * prefixed with its own name; strip that so the terminal code stays short
+     * and the reason reads as a cause (e.g. {@code seed_not_visible},
+     * {@code inventory_full}, {@code tool_unavailable}, {@code durability},
+     * {@code snapshot_failure}, or the synthetic {@code gatherer_stalled}).
+     */
+    private void recordReject(final String rawCode) {
+        final String code = rawCode.startsWith(GATHERER_PREFIX)
+                ? rawCode.substring(GATHERER_PREFIX.length())
+                : rawCode;
+        diagnosticsRejectReasons.merge(code, 1, Integer::sum);
     }
 
     private SkillTickResult failNoWoodCollected(
@@ -881,6 +959,27 @@ public final class GatherNearbyWoodSkill implements Skill<NoParameters> {
                 + canopyBinds
                 + ".d"
                 + bestDistX10;
+    }
+
+    /**
+     * P22 overload: appends the dominant gatherer reject reason (or multiple
+     * reasons joined with {@code +}) to the still-monitorable
+     * {@code no_wood_collected} token so the exact cause of an empty gather is
+     * observable in the terminal failure code. A null/empty reason returns the
+     * base code unchanged (keeps the bare-code monitors matching).
+     */
+    static String noWoodCollectedCode(
+            final int woodFacesSeen,
+            final int rejectedSeeds,
+            final int canopyBinds,
+            final int bestDistX10,
+            final String rejectReason
+    ) {
+        final String base = noWoodCollectedCode(
+                woodFacesSeen, rejectedSeeds, canopyBinds, bestDistX10);
+        return rejectReason == null || rejectReason.isEmpty()
+                ? base
+                : base + "." + rejectReason;
     }
 
     private void cancelChildren(final SkillContext context) {
