@@ -110,12 +110,27 @@ public final class CompanionConfig {
         )
         .define("autonomy.enabled", false);
 
-    public static final ForgeConfigSpec.IntValue AUTONOMY_INTERVAL_SECONDS = BUILDER
+    public static final ForgeConfigSpec.IntValue AUTONOMY_WAKE_LEVEL = BUILDER
         .comment(
-            "Seconds between autonomous objective proposals while idle.",
-            "Clamped to at least 1 second and at most 600 seconds."
+            "How long a quiet, idle companion waits before reviewing its",
+            "situation on its own. The wait grows with the square of the",
+            "level, so the setting stays useful across its whole range:",
+            "1 = 20 seconds, 2 = 80 seconds, 3 = 3 minutes, 10 = 33 minutes.",
+            "This only bounds the periodic case. A finished or failed",
+            "objective wakes the companion immediately regardless of level."
         )
-        .defineInRange("autonomy.intervalSeconds", 45, 1, 600);
+        .defineInRange("autonomy.wakeLevel", 1, 1, 10);
+
+    public static final ForgeConfigSpec.IntValue AUTONOMY_MINIMUM_INTERVAL_SECONDS =
+        BUILDER
+        .comment(
+            "Minimum spacing between two autonomous objective proposals.",
+            "This is an anti-hammering guard, not the cadence: it only takes",
+            "effect when a proposal keeps failing to install, or is replaced",
+            "immediately. Raise it if an unstable provider causes repeated",
+            "proposals; leave it low so a genuine idle can be answered fast."
+        )
+        .defineInRange("autonomy.minimumIntervalSeconds", 5, 0, 600);
 
     public static final ForgeConfigSpec.ConfigValue<String> AUTONOMY_GOAL_STYLE = BUILDER
         .comment(

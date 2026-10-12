@@ -2,6 +2,7 @@ package dev.mcai.companion.autonomy;
 
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -11,6 +12,7 @@ import dev.mcai.companion.control.GoalCoordinator;
 import dev.mcai.companion.control.GoalSnapshot;
 import dev.mcai.companion.control.GoalSource;
 import dev.mcai.companion.control.GoalStatus;
+import dev.mcai.companion.control.Hold;
 import dev.mcai.companion.model.DecisionContext;
 import dev.mcai.companion.model.ModelGateway;
 import dev.mcai.companion.model.ModelOutcome;
@@ -19,36 +21,90 @@ import dev.mcai.companion.model.SkillArgumentValidator;
 import dev.mcai.companion.runtime.ServerRuntime;
 
 /**
- * Periodically asks the configured model for the next objective while the
- * companion is idle and no external principal (player chat, MCP, or a locked
- * hardcore evaluation) owns the goal. The proposed objective is fed back
- * through the normal {@link GoalCoordinator} so the existing brain, skill
- * supervisor and fair actuator pursue it exactly like any player-assigned
- * goal. Execution never bypasses {@code FairPlayerActuator}, so autonomous
- * goals stay within the same honest, packet-level movement envelope.
+ * Asks the configured model for the next objective while the companion is
+ * idle and no external principal (player chat, MCP, or a locked hardcore
+ * evaluation) owns the goal. The proposed objective is fed back through the
+ * normal {@link GoalCoordinator} so the existing brain, skill supervisor and
+ * fair actuator pursue it exactly like any player-assigned goal. Execution
+ * never bypasses {@code FairPlayerActuator}, so autonomous goals stay within
+ * the same honest, packet-level movement envelope.
  *
- * <p>This driver is intentionally thin: it does not parse a skill or issue any
- * world mutation itself. It only reads the latest bounded observation, asks the
- * model to speak one objective, and calls {@link GoalCoordinator#setGoal}.</p>
+ * <p>This driver is intentionally thin: it does not parse a skill or issue
+ * any world mutation itself. It reads the latest bounded observation, asks
+ * the model to speak one objective, and calls {@link GoalCoordinator#setGoal}.</p>
+ *
+ * <h2>When it asks</h2>
+ *
+ * <p>It used to ask on a fixed 45-second timer, which was wrong in both
+ * directions: a goal that had just failed still waited out the remainder of
+ * the interval, and a world where nothing had changed was re-examined for
+ * the same answer. Asking is now gated by {@link AutonomyWakeup}, which
+ * tracks <em>what changed</em> rather than how much time has passed:</p>
+ *
+ * <ul>
+ *   <li>a {@link GoalStatus#COMPLETED} or {@link GoalStatus#FAILED} goal,
+ *       and any hold the companion can leave on her own, is urgent and
+ *       wakes her on the next tick;</li>
+ *   <li>a quiet world only wakes her once {@link
+ *       Ripeness#maxWaitMillisOf} has elapsed, so the periodic review still
+ *       happens but at a cost proportional to how idle she really is;</li>
+ *   <li>a hold she cannot clear — an absent body, an owner's stop, a
+ *       missing endpoint — produces no signal at all, because the request
+ *       would be discarded.</li>
+ * </ul>
+ *
+ * <p>{@code autonomy.minimumIntervalSeconds} remains as an anti-hammering
+ * guard. It is not the cadence; it only bites when proposals keep failing to
+ * install.</p>
  */
 public final class AutonomyDriver {
-    /** Never probe more often than this many ticks, regardless of config. */
-    private static final int MIN_INTERVAL_TICKS = 20;
-    /** Hard ceiling so a misconfigured interval cannot starve the tick loop. */
-    private static final int MAX_INTERVAL_TICKS = 600 * 20;
-
     private final AtomicLong lastProbeTick = new AtomicLong(-1L);
     private final AtomicBoolean inFlight = new AtomicBoolean(false);
+
+    /**
+     * The wake gate. Accumulates the reason the companion is idle and
+     * decides when that reason is worth a model call.
+     *
+     * <p>One instance for the whole server is correct: the companion has one
+     * body, so there is only ever one idle situation to track. The state is
+     * touched only from the server tick, which is the sole caller of
+     * {@link #tick}.</p>
+     *
+     * <p>Created lazily rather than in a field initialiser. The runtime
+     * holds this driver in a {@code static final} field, so a field
+     * initialiser would read the Forge configuration while the mod class is
+     * still loading — before the config has been registered. The level is
+     * read on the first tick instead, and re-read whenever the configured
+     * value changes so an operator can retune it without a restart.</p>
+     */
+    private AutonomyWakeup wakeup;
+
+    /** The wake level {@link #wakeup} was built with, or {@code -1}. */
+    private int appliedWakeLevel = -1;
 
     public void tick(final ServerRuntime runtime, final long currentTick) {
         if (!CompanionConfig.AUTONOMY_ENABLED.get()) {
             return;
         }
         final GoalSnapshot goal = runtime.goals().snapshot();
-        if (!canTakeOver(goal)) {
-            // A goal is still being pursued (or is mid-cancel), or a hardcore
-            // evaluation has locked external writes. Either way the companion is
-            // not ours to direct right now.
+        final long nowMillis = currentTick * 50L;
+        final AutonomyWakeup gate = wakeup();
+        /*
+         * Record where the companion is before deciding. Doing this on every
+         * tick keeps the idle bookkeeping continuous, so a burst of changes
+         * is counted once and a quiet stretch is measured from its true
+         * start rather than from whenever a request last happened to run.
+         */
+        gate.observe(
+                runtime.goals().haltReason(),
+                runtime.goals().hold(),
+                nowMillis
+        );
+        if (!mayPropose(goal, runtime.goals().hold())) {
+            // Either a goal still has an owner (running, cancelling, or a
+            // hardcore evaluation holding external writes), or the companion
+            // is in a hold autonomy cannot clear. Either way the driver is
+            // not the component that resolves this.
             return;
         }
         final ModelGateway gateway = runtime.model().gateway();
@@ -56,15 +112,31 @@ public final class AutonomyDriver {
             // No verified provider: do not invent objectives offline.
             return;
         }
-        final int intervalTicks = clampInterval(
-            CompanionConfig.AUTONOMY_INTERVAL_SECONDS.get() * 20
+        if (!gate.isRipe(nowMillis)) {
+            // Nothing has changed and no wait budget has expired. Do not
+            // spend a call: ripeness would have to be recomputed anyway.
+            return;
+        }
+        final int minimumIntervalTicks = clampMinimumIntervalTicks(
+            CompanionConfig.AUTONOMY_MINIMUM_INTERVAL_SECONDS.get() * 20
         );
         final long last = lastProbeTick.get();
-        if (last >= 0 && currentTick - last < intervalTicks) {
+        if (last >= 0 && currentTick - last < minimumIntervalTicks) {
             return;
         }
         if (!inFlight.compareAndSet(false, true)) {
             // A previous model request is still resolving; skip this tick.
+            return;
+        }
+        /*
+         * Consume only after every other guard has passed, and read the
+         * level from the take itself. A wake that is rejected by the
+         * minimum-interval guard leaves its signals pending, so the next
+         * eligible tick still has something to act on.
+         */
+        final Ripeness consumed = gate.consume(nowMillis);
+        if (!consumed.atLeast(Ripeness.ENOUGH)) {
+            inFlight.set(false);
             return;
         }
         lastProbeTick.set(currentTick);
@@ -84,6 +156,18 @@ public final class AutonomyDriver {
     }
 
     /**
+     * The wake gate, rebuilt when the operator changes the configured level.
+     */
+    private AutonomyWakeup wakeup() {
+        final int level = CompanionConfig.AUTONOMY_WAKE_LEVEL.get();
+        if (wakeup == null || appliedWakeLevel != level) {
+            wakeup = new AutonomyWakeup(level);
+            appliedWakeLevel = level;
+        }
+        return wakeup;
+    }
+
+    /**
      * Whether the companion has no live owner and the driver may therefore
      * propose an autonomous objective.
      *
@@ -98,6 +182,11 @@ public final class AutonomyDriver {
      *
      * <p>{@link GoalStatus#RUNNING} still has an active owner, and
      * {@link GoalStatus#CANCEL_PENDING} is mid-cancel, so both are excluded.
+     *
+     * <p>The hold is checked as well, not only the status: a body that is
+     * absent reports {@code SAFE_IDLE} exactly like an ordinary cancel, but
+     * no proposal can be carried out until a respawn. Rejecting it here
+     * avoids paying for a request whose answer must be thrown away.</p>
      */
     static boolean canTakeOver(final GoalSnapshot goal) {
         if (goal.externalWritesLocked()) {
@@ -109,14 +198,32 @@ public final class AutonomyDriver {
         };
     }
 
-    private static int clampInterval(final int requested) {
-        if (requested < MIN_INTERVAL_TICKS) {
-            return MIN_INTERVAL_TICKS;
+    /**
+     * Whether a proposal is worth making at all: the goal must be ready for
+     * one and the companion must be clearable back into work.
+     *
+     * <p>Separated from {@link #canTakeOver} so the status rule and the hold
+     * rule stay independently testable. The two together are what make the
+     * gate honest: a status check alone would treat an absent body as idle
+     * and pay for a request whose answer must be discarded.</p>
+     */
+    static boolean mayPropose(
+            final GoalSnapshot goal,
+            final Optional<Hold> hold
+    ) {
+        return canTakeOver(goal)
+                && hold.filter(Hold::selfClearing).isPresent();
+    }
+
+    private static int clampMinimumIntervalTicks(final int requested) {
+        if (requested < 0) {
+            return 0;
         }
-        if (requested > MAX_INTERVAL_TICKS) {
-            return MAX_INTERVAL_TICKS;
-        }
-        return requested;
+        /*
+         * A ceiling of ten minutes: the configured maximum is 600 seconds,
+         * so anything beyond it is a unit error rather than an intent.
+         */
+        return Math.min(requested, 600 * 20);
     }
 
     private static PlannerInput buildInput(

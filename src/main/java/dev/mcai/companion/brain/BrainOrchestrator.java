@@ -9,6 +9,8 @@ import dev.mcai.companion.control.GoalExecutionPlan;
 import dev.mcai.companion.control.GoalSnapshot;
 import dev.mcai.companion.control.GoalSource;
 import dev.mcai.companion.control.GoalStatus;
+import dev.mcai.companion.control.HaltReason;
+import dev.mcai.companion.control.Hold;
 import dev.mcai.companion.model.DecisionContext;
 import dev.mcai.companion.model.DecisionEnvelope;
 import dev.mcai.companion.model.DecisionKind;
@@ -110,6 +112,19 @@ public final class BrainOrchestrator {
     private String lastFailedSkillName = "";
     private String lastFailedSkillCode = "";
     private int repeatedIdenticalSkillFailures;
+
+    /*
+     * Planner-trigger bookkeeping. These record what the world looked like
+     * when the last planner call was issued, so the next call can be named
+     * by what changed rather than by how much time elapsed. They are
+     * observational: nothing is gated on them yet.
+     */
+    /** Nano time of the most recent planner call, or {@code -1}. */
+    private long lastPlanIssuedAtNanos = -1L;
+    /** Route milestone the last planner call had reached, or empty. */
+    private String lastPlannedMilestone = "";
+    /** Dimension seen at the last planner call, or empty. */
+    private String lastPlannedDimension = "";
     /*
      * A player can explicitly bind a follow request to their own server
      * identity.  If that player is briefly out of the companion's fair
@@ -329,7 +344,10 @@ public final class BrainOrchestrator {
                     goal.revision(),
                     exception
             );
-            terminal(goal, GoalStatus.SAFE_IDLE, "observation_unavailable");
+            terminal(
+                goal,
+                HaltReason.OBSERVATION_UNAVAILABLE
+            );
             emitNotice(goal.revision(), "observation_unavailable");
             return snapshot();
         }
@@ -344,7 +362,10 @@ public final class BrainOrchestrator {
         }
 
         if (observation.skillContext().goalRevision() != goal.revision()) {
-            terminal(goal, GoalStatus.SAFE_IDLE, "observation_revision_mismatch");
+            terminal(
+                goal,
+                HaltReason.OBSERVATION_REVISION_MISMATCH
+            );
             emitNotice(goal.revision(), "observation_revision_mismatch");
             return snapshot();
         }
@@ -895,9 +916,8 @@ public final class BrainOrchestrator {
         }
         emitNotice(goal.revision(), "server_verified_auto_complete");
         terminal(
-                goal,
-                GoalStatus.COMPLETED,
-                "server_verified_complete"
+            goal,
+            HaltReason.SERVER_VERIFIED_COMPLETE
         );
         return true;
     }
@@ -925,9 +945,8 @@ public final class BrainOrchestrator {
             after = cancellation.snapshot();
             if (!cancellation.accepted() && isActive(after)) {
                 terminal(
-                        replacement,
-                        GoalStatus.SAFE_IDLE,
-                        "replacement_skill_cancel_rejected"
+                    replacement,
+                    HaltReason.REPLACEMENT_SKILL_CANCEL_REJECTED
                 );
                 emitNotice(
                         replacement.revision(),
@@ -983,7 +1002,8 @@ public final class BrainOrchestrator {
                 mailbox.get() != null,
                 waitingForPlayer,
                 consecutiveModelFailures,
-                droppedMailboxCompletions.get()
+                droppedMailboxCompletions.get(),
+                goals.hold()
         );
     }
 
@@ -1116,7 +1136,10 @@ public final class BrainOrchestrator {
 
         SkillSupervisor.Snapshot skillSnapshot = skills.snapshot();
         if (!isActive(skillSnapshot)) {
-            terminal(goal, GoalStatus.SAFE_IDLE, "goal_cancelled");
+            terminal(
+                goal,
+                HaltReason.GOAL_CANCELLED
+            );
             sawActiveSkill = false;
             return;
         }
@@ -1130,7 +1153,10 @@ public final class BrainOrchestrator {
         SkillSupervisor.Snapshot afterCancellation = cancellation.snapshot();
         if (!cancellation.accepted()
                 && isActive(afterCancellation)) {
-            terminal(goal, GoalStatus.FAILED, "skill_cancel_rejected");
+            terminal(
+                goal,
+                HaltReason.SKILL_CANCEL_REJECTED
+            );
             emitNotice(goal.revision(), "skill_cancel_rejected");
             return;
         }
@@ -1144,10 +1170,16 @@ public final class BrainOrchestrator {
         Optional<SkillResult> result = afterCancellation.terminalResult();
         if (result.isPresent()
                 && result.get().status() == SkillResult.Status.FAILED) {
-            terminal(goal, GoalStatus.FAILED, "skill_cancel_failed");
+            terminal(
+                goal,
+                HaltReason.SKILL_CANCEL_FAILED
+            );
             emitNotice(goal.revision(), "skill_cancel_failed");
         } else {
-            terminal(goal, GoalStatus.SAFE_IDLE, "goal_cancelled");
+            terminal(
+                goal,
+                HaltReason.GOAL_CANCELLED
+            );
             if (result.isPresent()
                     && result.get().status() == SkillResult.Status.CANCELLED) {
                 /*
@@ -1186,7 +1218,10 @@ public final class BrainOrchestrator {
         SkillResult result = skill.terminalResult().orElseThrow();
         switch (result.status()) {
             case SAFE_IDLE -> {
-                terminal(goal, GoalStatus.SAFE_IDLE, "skill_safe_idle");
+                terminal(
+                    goal,
+                    HaltReason.SKILL_SAFE_IDLE
+                );
                 emitNotice(goal.revision(), "skill_safe_idle");
             }
             case FAILED -> {
@@ -1225,9 +1260,8 @@ public final class BrainOrchestrator {
                             "repeated_identical_skill_failure"
                     );
                     terminal(
-                            goal,
-                            GoalStatus.SAFE_IDLE,
-                            "repeated_skill_failure_without_progress"
+                        goal,
+                        HaltReason.REPEATED_SKILL_FAILURE_WITHOUT_PROGRESS
                     );
                 } else {
                     scheduleBackoff(
@@ -1268,9 +1302,8 @@ public final class BrainOrchestrator {
                             "server_verified_nearby_wood_complete"
                     );
                     terminal(
-                            goal,
-                            GoalStatus.COMPLETED,
-                            "server_verified_nearby_wood_complete"
+                        goal,
+                        HaltReason.SERVER_VERIFIED_NEARBY_WOOD_COMPLETE
                     );
                     break;
                 }
@@ -1629,7 +1662,10 @@ public final class BrainOrchestrator {
                 } else {
                     consecutiveNoActionDecisions = 0;
                     emitSpeech(goal, decision);
-                    terminal(goal, GoalStatus.SAFE_IDLE, "model_safe_idle");
+                    terminal(
+                        goal,
+                        HaltReason.MODEL_SAFE_IDLE
+                    );
                 }
             }
             case COMPLETE_GOAL -> {
@@ -1751,9 +1787,8 @@ public final class BrainOrchestrator {
                     }
                     emitSpeech(goal, decision);
                     terminal(
-                            goal,
-                            GoalStatus.COMPLETED,
-                            "server_verified_complete"
+                        goal,
+                        HaltReason.SERVER_VERIFIED_COMPLETE
                     );
                 }
             }
@@ -1883,7 +1918,10 @@ public final class BrainOrchestrator {
         }
 
         emitNotice(goal.revision(), "planner_no_action_exhausted");
-        terminal(goal, GoalStatus.SAFE_IDLE, "planner_no_action_exhausted");
+        terminal(
+            goal,
+            HaltReason.PLANNER_NO_ACTION_EXHAUSTED
+        );
         return true;
     }
 
@@ -2849,13 +2887,15 @@ public final class BrainOrchestrator {
                         "repeated_skill_start_rejection"
                 );
                 terminal(
-                        goal,
-                        GoalStatus.SAFE_IDLE,
-                        "repeated_skill_rejection_without_world_change"
+                    goal,
+                    HaltReason.REPEATED_SKILL_REJECTION_WITHOUT_WORLD_CHANGE
                 );
             } else if (consecutiveModelFailures
                     >= policy.maxConsecutiveModelFailures()) {
-                terminal(goal, GoalStatus.SAFE_IDLE, "skill_start_failures");
+                terminal(
+                    goal,
+                    HaltReason.SKILL_START_FAILURES
+                );
             } else {
                 scheduleBackoff(now, policy.minimumReplanBackoff());
             }
@@ -2947,12 +2987,18 @@ public final class BrainOrchestrator {
     private void applyAskPlayer(GoalSnapshot goal, DecisionEnvelope decision) {
         if (goal.externalWritesLocked()) {
             emitNotice(goal.revision(), "evaluation_requires_input");
-            terminal(goal, GoalStatus.SAFE_IDLE, "evaluation_requires_input");
+            terminal(
+                goal,
+                HaltReason.EVALUATION_REQUIRES_INPUT
+            );
             return;
         }
         if (decision.optionalSpeech().isBlank()) {
             emitNotice(goal.revision(), "invalid_ask_player");
-            terminal(goal, GoalStatus.SAFE_IDLE, "invalid_ask_player");
+            terminal(
+                goal,
+                HaltReason.INVALID_ASK_PLAYER
+            );
             return;
         }
         emitSpeech(goal, decision);
@@ -3005,7 +3051,10 @@ public final class BrainOrchestrator {
                     "模型服务拒绝了当前请求，我已暂停自动操作；请检查模型权限或账户额度。"
                 );
             }
-            terminal(goal, GoalStatus.SAFE_IDLE, "model_unavailable");
+            terminal(
+                goal,
+                HaltReason.MODEL_UNAVAILABLE
+            );
             return;
         }
         if (failure.kind() == ModelFailureKind.RATE_LIMITED) {
@@ -3093,7 +3142,10 @@ public final class BrainOrchestrator {
             return;
         }
         if (consecutiveModelFailures >= policy.maxConsecutiveModelFailures()) {
-            terminal(goal, GoalStatus.SAFE_IDLE, "model_failures_exhausted");
+            terminal(
+                goal,
+                HaltReason.MODEL_FAILURES_EXHAUSTED
+            );
             return;
         }
         Duration delay = policy.minimumReplanBackoff();
@@ -3101,6 +3153,105 @@ public final class BrainOrchestrator {
             delay = retryAfter;
         }
         scheduleBackoff(now, delay);
+    }
+
+    /**
+     * Captures the control-plane state the {@link PlannerTrigger} table
+     * reads, immediately before a planner call is issued.
+     *
+     * <p>Every input is derived from state the orchestrator already tracks;
+     * nothing new is sampled and no world access happens here. That keeps
+     * the classification free and reproducible.</p>
+     */
+    private PlannerTrigger.Signals plannerSignals(
+            final GoalSnapshot goal,
+            final BrainObservation observation,
+            final long now
+    ) {
+        final boolean routeInstalled = PlannerTrigger
+                .plannedTarget(goal.detailCode())
+                .isPresent();
+        /*
+         * "Has a plan" means either an explicit route is attached or a
+         * skill has already been accepted for this goal. A goal with
+         * neither has never been planned, which is the INITIAL case.
+         */
+        final boolean hasPlan = routeInstalled
+                || acceptedSkillForGoal
+                || sawActiveSkill
+                || lastPlanIssuedAtNanos >= 0L;
+
+        final String milestone = PlannerTrigger
+                .plannedTarget(goal.detailCode())
+                .map(Enum::name)
+                .orElse("");
+        final boolean milestoneAdvanced = !milestone.isEmpty()
+                && !milestone.equals(lastPlannedMilestone);
+        /*
+         * The declared terminal milestone being reached is verified by the
+         * server's own completion path, which marks the goal terminal and
+         * returns before any planner call. A goal still asking for a plan
+         * has therefore not reached its terminal milestone, so the honest
+         * value here is false rather than a guess derived from the detail
+         * code.
+         */
+        final boolean terminalReached = false;
+
+        final long elapsedMillis = lastPlanIssuedAtNanos < 0L
+                ? Long.MAX_VALUE
+                : Math.max(0L, (now - lastPlanIssuedAtNanos) / 1_000_000L);
+        return new PlannerTrigger.Signals(
+                hasPlan,
+                milestoneAdvanced,
+                dimensionChanged(observation),
+                consecutiveNoActionDecisions,
+                Math.max(
+                        consecutiveModelFailures,
+                        repeatedIdenticalSkillFailures
+                ),
+                terminalReached,
+                elapsedMillis,
+                PlannerTrigger.DEFAULT_PERIODIC_REVIEW_MILLIS
+        );
+    }
+
+    /**
+     * Whether the companion's dimension changed since the last planner call.
+     *
+     * <p>Read from the semantic sample's {@code self.dimension}, the same
+     * field the skill argument parser trusts. An unreadable sample is
+     * treated as unchanged: reporting a dimension change on a parse failure
+     * would fabricate the strongest trigger in the table.</p>
+     */
+    private boolean dimensionChanged(final BrainObservation observation) {
+        final Optional<String> current = observedDimension(
+                observation.semanticJson()
+        );
+        if (current.isEmpty()) {
+            return false;
+        }
+        if (lastPlannedDimension.isEmpty()) {
+            return false;                 // no baseline yet: not a change
+        }
+        return !current.orElseThrow().equals(lastPlannedDimension);
+    }
+
+    private static Optional<String> observedDimension(
+            final String semanticJson
+    ) {
+        try {
+            final JsonObject root = JsonParser.parseString(semanticJson)
+                    .getAsJsonObject();
+            final JsonObject self = root.getAsJsonObject("self");
+            if (self == null
+                    || !self.has("dimension")
+                    || !self.get("dimension").isJsonPrimitive()) {
+                return Optional.empty();
+            }
+            return Optional.of(self.get("dimension").getAsString());
+        } catch (RuntimeException malformedObservation) {
+            return Optional.empty();
+        }
     }
 
     private void issuePlannerRequest(
@@ -3116,7 +3267,10 @@ public final class BrainOrchestrator {
         }
         GatewayStatus gatewayStatus = modelGateway.status();
         if (gatewayStatus == GatewayStatus.CLOSED) {
-            terminal(goal, GoalStatus.SAFE_IDLE, "model_gateway_closed");
+            terminal(
+                goal,
+                HaltReason.MODEL_GATEWAY_CLOSED
+            );
             emitNotice(goal.revision(), "model_gateway_closed");
             return;
         }
@@ -3124,6 +3278,28 @@ public final class BrainOrchestrator {
             scheduleBackoff(now, policy.minimumReplanBackoff());
             return;
         }
+
+        /*
+         * Name the reason this call is being made, before making it. The
+         * trigger table is observational for now: it records the
+         * distribution of reasons so that narrowing the set later can be
+         * driven by data rather than by guesswork. See PlannerTrigger for
+         * why this is not yet a gate.
+         */
+        final PlannerTrigger trigger = PlannerTrigger.classify(
+                plannerSignals(goal, observation, now)
+        ).orElse(PlannerTrigger.PERIODIC_REVIEW);
+        emitNotice(
+                goal.revision(),
+                "planner_trigger." + trigger.code()
+        );
+        lastPlanIssuedAtNanos = now;
+        lastPlannedMilestone = PlannerTrigger
+                .plannedTarget(goal.detailCode())
+                .map(Enum::name)
+                .orElse("");
+        lastPlannedDimension = observedDimension(observation.semanticJson())
+                .orElse("");
 
         String requestId = "brain-" + goal.revision() + "-" + (++requestSequence);
         /*
@@ -3164,7 +3340,10 @@ public final class BrainOrchestrator {
                         observation.trustedRuntimeJson().length()
                 );
             }
-            terminal(goal, GoalStatus.SAFE_IDLE, "planner_input_invalid");
+            terminal(
+                goal,
+                HaltReason.PLANNER_INPUT_INVALID
+            );
             emitNotice(goal.revision(), "planner_input_invalid");
             return;
         }
@@ -3174,7 +3353,10 @@ public final class BrainOrchestrator {
                 goal,
                 plannerObservation
         )) {
-            terminal(goal, GoalStatus.SAFE_IDLE, "planner_input_invalid");
+            terminal(
+                goal,
+                HaltReason.PLANNER_INPUT_INVALID
+            );
             emitNotice(goal.revision(), "planner_input_invalid");
             return;
         }
@@ -3640,21 +3822,40 @@ public final class BrainOrchestrator {
         nextRequestNotBeforeNanos = saturatingAdd(now, Math.max(1, delayNanos));
     }
 
+    /**
+     * Applies one entry from the {@link HaltReason} table.
+     *
+     * <p>The reason carries four facts this method used to hard-code in
+     * three different places: the terminal status, whether the body halts,
+     * whether superseded instructions are cleared, and which
+     * {@link Hold} the companion rests in. The status is taken from the
+     * table rather than passed separately, so a call site can no longer
+     * pair one code with a contradictory status.</p>
+     */
     private void terminal(
-            GoalSnapshot expected,
-            GoalStatus status,
-            String code
+            final GoalSnapshot expected,
+            final HaltReason reason
     ) {
-        GoalSnapshot current = goals.snapshot();
+        final GoalSnapshot current = goals.snapshot();
         if (current.revision() != expected.revision()
                 || (current.status() != GoalStatus.RUNNING
                 && current.status() != GoalStatus.CANCEL_PENDING)) {
             return;
         }
-        goals.markTerminal(status, code);
-        waitingForPlayer = false;
-        waitingGoalRevision = -1;
-        if (inFlight != null && !inFlight.cancellationRequested) {
+        goals.markTerminal(reason.status(), reason.code());
+        if (reason.clearsSupersededInstructions()) {
+            /*
+             * A waiting player and a pending cancel both describe an
+             * instruction for the goal being stopped. Carrying either into
+             * the next goal would make the replacement inherit a decision
+             * nobody made for it.
+             */
+            waitingForPlayer = false;
+            waitingGoalRevision = -1;
+        }
+        if (reason.haltsBody()
+                && inFlight != null
+                && !inFlight.cancellationRequested) {
             inFlight.cancellationRequested = true;
             modelGateway.cancelForGoalRevision(goals.snapshot().revision());
         }
@@ -3939,11 +4140,22 @@ public final class BrainOrchestrator {
             boolean mailboxOccupied,
             boolean waitingForPlayer,
             int consecutiveModelFailures,
-            long droppedMailboxCompletions
+            long droppedMailboxCompletions,
+            /**
+             * Where the companion is resting, from the {@link HaltReason}
+             * tables. Empty while a goal is still running or cancelling.
+             *
+             * <p>Exposed so a caller can distinguish, for example, a safe
+             * idle that a new owner instruction clears ({@link Hold#OWNER_STOP})
+             * from one that needs a respawn ({@link Hold#DEAD}) without
+             * re-deriving that from a raw status string.</p>
+             */
+            Optional<Hold> hold
     ) {
         public Snapshot {
             Objects.requireNonNull(state, "state");
             Objects.requireNonNull(inFlightRequestId, "inFlightRequestId");
+            hold = Objects.requireNonNull(hold, "hold");
         }
     }
 

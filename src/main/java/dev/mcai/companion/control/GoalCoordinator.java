@@ -175,6 +175,54 @@ public final class GoalCoordinator {
         );
     }
 
+    /**
+     * The stop reason behind the current terminal status, if this coordinator
+     * stopped through the {@link HaltReason} table.
+     *
+     * <p>Only {@link GoalCoordinator#markTerminal} writes a halt reason, and
+     * only terminal statuses can carry one. A goal that is still running, or
+     * one whose detail code was set by {@link GoalExecutionPlan}, resolves to
+     * empty rather than to a misleading guess.</p>
+     *
+     * <p>This is the lookup that makes the table useful at runtime: callers
+     * no longer have to switch on a bare status string to decide whether a
+     * respawn, a new owner instruction or a refreshed endpoint is what
+     * releases the companion.</p>
+     */
+    public synchronized Optional<HaltReason> haltReason() {
+        if (status != GoalStatus.COMPLETED
+                && status != GoalStatus.FAILED
+                && status != GoalStatus.SAFE_IDLE) {
+            return Optional.empty();
+        }
+        return HaltReason.resolve(detailCode)
+                /*
+                 * A controller may mark a terminal status directly with its
+                 * own code instead of going through the table (the
+                 * evaluation victory tracker and the runtime tick do this).
+                 * Fall back to the status so the caller still receives a
+                 * hold, but do not invent a specific reason.
+                 */
+                .filter(reason -> reason.status() == status);
+    }
+
+    /**
+     * The hold implied by the current goal, derived from the stop reason
+     * when one is registered and from the status otherwise.
+     *
+     * @return empty while the goal is still running or cancelling, because
+     *         a live goal is not resting anywhere.
+     */
+    public synchronized Optional<Hold> hold() {
+        if (!Hold.isHold(status)) {
+            return Optional.empty();
+        }
+        return HaltReason.resolve(detailCode)
+                .filter(reason -> reason.status() == status)
+                .map(HaltReason::hold)
+                .or(() -> Optional.of(Hold.of(status)));
+    }
+
     private void restore() {
         final Optional<PersistedGoalState> loaded = persistence.load();
         if (loaded.isEmpty()) {
