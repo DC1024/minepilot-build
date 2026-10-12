@@ -245,7 +245,8 @@ final class PrepareStoneToolsSkillTest {
 
     @Test
     void handlesNegativeColumnsWhenSteppingTowardsNegativeZ() {
-        final VisibleBlockFace block = visibleStone(-6, 62, -22, 2.0);
+        /* 身在第 (-5, -21) 列，向 -Z 走一格 -> 目标列 (-5, -22)。 */
+        final VisibleBlockFace block = visibleStone(-5, 62, -22, 2.0);
 
         assertEquals(
                 block,
@@ -255,6 +256,25 @@ final class PrepareStoneToolsSkillTest {
                         -1,
                         63.6,
                         List.of(block)
+                ).orElseThrow()
+        );
+    }
+
+    @Test
+    void handlesNegativeColumnsWhenSteppingTowardsNegativeX() {
+        /* 身在第 (-5, -21) 列，向 -X 走一格 -> 目标列 (-6, -21)。 */
+        final VisibleBlockFace block = visibleStone(-6, 61, -21, 1.8);
+        final VisibleBlockFace otherColumn =
+                visibleStone(-5, 61, -22, 1.1);
+
+        assertEquals(
+                block,
+                PrepareStoneToolsSkill.selectStairBlock(
+                        new BlockCoordinate(-5, 62, -21),
+                        -1,
+                        0,
+                        62.6,
+                        List.of(otherColumn, block)
                 ).orElseThrow()
         );
     }
