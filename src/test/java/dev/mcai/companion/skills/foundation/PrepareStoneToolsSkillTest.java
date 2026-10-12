@@ -21,7 +21,7 @@ final class PrepareStoneToolsSkillTest {
         );
 
         final var selected = PrepareStoneToolsSkill.selectNaturalStone(
-                63,
+                new BlockCoordinate(0, 63, 0),
                 List.of(stone)
         );
 
@@ -40,9 +40,68 @@ final class PrepareStoneToolsSkillTest {
         );
 
         assertTrue(PrepareStoneToolsSkill.selectNaturalStone(
-                63,
+                new BlockCoordinate(0, 63, 0),
                 List.of(outsideRayBudget)
         ).isEmpty());
+    }
+
+    @Test
+    void acceptsStoneBelowTheFeetWhenItIsNotTheSupportBlock() {
+        /*
+         * 修复前这块石头（脚 y=63、石头 y=60）会被 `y >= feetY` 丢掉，
+         * 而扫描的 -25 度俯视恰恰就是为了看它 —— 两者本来互相矛盾。
+         */
+        final VisibleBlockFace stone = visibleStone(
+                9,
+                60,
+                7,
+                5.5
+        );
+
+        final var selected = PrepareStoneToolsSkill.selectNaturalStone(
+                new BlockCoordinate(4, 63, 7),
+                List.of(stone)
+        );
+
+        assertEquals(stone, selected.orElseThrow());
+    }
+
+    @Test
+    void refusesTheSingleBlockDirectlyUnderfoot() {
+        final VisibleBlockFace support = visibleStone(
+                4,
+                62,
+                7,
+                1.0
+        );
+
+        assertTrue(PrepareStoneToolsSkill.selectNaturalStone(
+                new BlockCoordinate(4, 63, 7),
+                List.of(support)
+        ).isEmpty());
+    }
+
+    @Test
+    void stillMinesAnotherStoneWhenTheSupportBlockIsAlsoVisible() {
+        final VisibleBlockFace support = visibleStone(
+                4,
+                62,
+                7,
+                1.0
+        );
+        final VisibleBlockFace other = visibleStone(
+                10,
+                58,
+                7,
+                6.0
+        );
+
+        final var selected = PrepareStoneToolsSkill.selectNaturalStone(
+                new BlockCoordinate(4, 63, 7),
+                List.of(support, other)
+        );
+
+        assertEquals(other, selected.orElseThrow());
     }
 
     private static VisibleBlockFace visibleStone(

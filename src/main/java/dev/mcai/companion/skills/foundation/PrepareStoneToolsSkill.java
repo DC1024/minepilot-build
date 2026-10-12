@@ -7,6 +7,7 @@ import dev.mcai.companion.action.BlockFace;
 import dev.mcai.companion.action.BlockInteractionTarget;
 import dev.mcai.companion.action.LookIntent;
 import dev.mcai.companion.model.SkillArgument;
+import dev.mcai.companion.perception.BlockCoordinate;
 import dev.mcai.companion.perception.InventoryItemSummary;
 import dev.mcai.companion.perception.PerceptionVec3;
 import dev.mcai.companion.perception.VisibleBlockFace;
@@ -123,6 +124,16 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     private GatherVisibleBlockClusterParameters gatheringParameters;
     private MoveToSkill tableMovement;
     private MoveToParameters tableMovementParameters;
+
+    /*
+     * Diagnostics only -- surfaced through checkpoint() so a failed
+     * search can be told apart from a search that never had candidates.
+     * A negative value means "not sampled yet".
+     */
+    private int diagnosticsVisibleFaces = -1;
+    private int diagnosticsStoneFaces = -1;
+    private int diagnosticsStoneFacesKept = -1;
+    private int diagnosticsTableFaces = -1;
 
     public PrepareStoneToolsSkill(
             final UUID expectedPlayerId,
@@ -298,11 +309,19 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                         Locale.ROOT,
                         "{\"phase\":\"%s\",\"scanTurns\":%d,"
                                 + "\"elapsedTicks\":%d,"
-                                + "\"gathering\":%s}",
+                                + "\"gathering\":%s,"
+                                + "\"visibleFaces\":%d,"
+                                + "\"stoneFaces\":%d,"
+                                + "\"stoneFacesKept\":%d,"
+                                + "\"tableFaces\":%d}",
                         phase.name(),
                         scanTurns,
                         Math.max(0L, context.gameTick() - startedAtTick),
-                        phase == Phase.GATHER_STONE
+                        phase == Phase.GATHER_STONE,
+                        diagnosticsVisibleFaces,
+                        diagnosticsStoneFaces,
+                        diagnosticsStoneFacesKept,
+                        diagnosticsTableFaces
                 )
         );
     }
@@ -431,9 +450,18 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         if (maybeInteraction.isPresent()) {
             final InteractionSkillFrame interaction =
                     maybeInteraction.orElseThrow();
+            final BlockCoordinate feet = new BlockCoordinate(
+                    (int) Math.floor(frame.position().x()),
+                    (int) Math.floor(frame.position().y()),
+                    (int) Math.floor(frame.position().z())
+            );
+            recordStoneSearchDiagnostics(
+                    feet,
+                    interaction.visibleBlockFaces()
+            );
             final Optional<VisibleBlockFace> stone =
                     selectNaturalStone(
-                            (int) Math.floor(frame.position().y()),
+                            feet,
                             interaction.visibleBlockFaces()
                     );
             if (stone.isPresent()) {
@@ -540,6 +568,10 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
             selectedTable = crosshair.orElseThrow();
             return transition(context, Phase.OPEN_TABLE);
         }
+        diagnosticsVisibleFaces = frame.visibleBlockFaces().size();
+        diagnosticsTableFaces = (int) frame.visibleBlockFaces().stream()
+                .filter(PrepareStoneToolsSkill::isCraftingTable)
+                .count();
         final Optional<VisibleBlockFace> table =
                 visibleTable(frame);
         if (table.isPresent()) {
@@ -899,19 +931,66 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         );
     }
 
+    /**
+     * Picks the nearest naturally visible stone face worth mining.
+     *
+     * <p>Only the single block directly underfoot is excluded, because
+     * mining it would drop the companion. Everything else is fair game --
+     * including stone below the feet, which is exactly what the downward
+     * scan tilts exist to find. Excluding all stone below the feet (as this
+     * selector previously did) contradicted the scan itself and made a body
+     * standing on open grass report {@code visible_stone_not_found} until
+     * the scan budget ran out.</p>
+     */
     static Optional<VisibleBlockFace> selectNaturalStone(
-            final int feetY,
+            final BlockCoordinate feet,
             final List<VisibleBlockFace> visibleBlockFaces
     ) {
+        Objects.requireNonNull(feet, "feet");
         Objects.requireNonNull(visibleBlockFaces, "visibleBlockFaces");
+        final int supportY = feet.y() - 1;
         return visibleBlockFaces.stream()
                 .filter(face -> face.blockTypeId().equals(STONE))
-                .filter(face -> face.block().y() >= feetY)
+                .filter(face -> !isOwnSupportBlock(
+                        face.block(),
+                        feet,
+                        supportY
+                ))
                 .filter(face -> face.distance()
                         <= MAXIMUM_VISIBLE_STONE_SEED_DISTANCE)
                 .min(Comparator.comparingDouble(
                         VisibleBlockFace::distance
                 ));
+    }
+
+    private static boolean isOwnSupportBlock(
+            final BlockCoordinate block,
+            final BlockCoordinate feet,
+            final int supportY
+    ) {
+        return block.x() == feet.x()
+                && block.y() == supportY
+                && block.z() == feet.z();
+    }
+
+    private void recordStoneSearchDiagnostics(
+            final BlockCoordinate feet,
+            final List<VisibleBlockFace> visibleBlockFaces
+    ) {
+        diagnosticsVisibleFaces = visibleBlockFaces.size();
+        final List<VisibleBlockFace> stones = visibleBlockFaces.stream()
+                .filter(face -> face.blockTypeId().equals(STONE))
+                .toList();
+        diagnosticsStoneFaces = stones.size();
+        diagnosticsStoneFacesKept = (int) stones.stream()
+                .filter(face -> !isOwnSupportBlock(
+                        face.block(),
+                        feet,
+                        feet.y() - 1
+                ))
+                .filter(face -> face.distance()
+                        <= MAXIMUM_VISIBLE_STONE_SEED_DISTANCE)
+                .count();
     }
 
     private static Optional<VisibleBlockFace> visibleTable(
