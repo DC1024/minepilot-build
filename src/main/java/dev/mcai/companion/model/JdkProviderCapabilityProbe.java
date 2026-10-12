@@ -345,7 +345,19 @@ public final class JdkProviderCapabilityProbe implements ProviderCapabilityProbe
                  * strands a usable weaker contract, so remember the failure
                  * and keep negotiating down the preference list. Only the
                  * last remaining failure is reported.
+                 *
+                 * Only an explicit capability rejection can justify another
+                 * billable request. Every other kind is terminal here: the
+                 * next weaker contract would fail identically, so walking the
+                 * rest of the preference list would only duplicate cost and
+                 * delay the caller's recovery. That covers authentication,
+                 * permission, billing, missing model, rate limiting, server
+                 * outages, timeouts, transport errors, context limits and
+                 * unclassified request errors.
                  */
+                if (failure.kind() != ModelFailureKind.CAPABILITY_UNSUPPORTED) {
+                    return ProtocolAttempt.failed(failure);
+                }
                 lastFailure = failure;
                 break;
             }
