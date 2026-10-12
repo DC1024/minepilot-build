@@ -61,7 +61,20 @@ public final class CollectObservedItemSkill
      * avoids asking A* to route to an item entity's non-walkable Y value.
      */
     private static final double PICKUP_WAIT_HORIZONTAL_RADIUS = 1.0;
-    private static final double PICKUP_WAIT_VERTICAL_LIMIT = 2.25;
+    /*
+     * Player.tick() searches an AABB inflated by 1.0 horizontally and 0.5
+     * vertically, so a stack at the body's own Y is reachable from roughly
+     * 0.75 blocks below and 2.25 above. This limit used to be a symmetric
+     * 2.25, which told the skill to stand still and wait for a drop sitting
+     * two blocks *under* the body -- a height the inflated envelope can
+     * never touch, so the body froze in place until the tick budget ran out
+     * (the stone-gathering stall). Keep the generous upward reach: a stack
+     * resting on a block above the body is still collectable. Clamp only the
+     * downward side to the real envelope, so a lower drop forces the skill
+     * to walk toward it instead of waiting for a pickup that cannot happen.
+     */
+    private static final double PICKUP_WAIT_UPWARD_LIMIT = 2.25;
+    private static final double PICKUP_WAIT_DOWNWARD_LIMIT = 0.75;
     private static final double HORIZONTAL_EPSILON = 1.0E-9;
     private static final long DIRECT_STEP_MEMORY_REVISIONS = 16;
     private static final int MAXIMUM_ROUTE_EVIDENCE_PROBES = 12;
@@ -1039,12 +1052,13 @@ public final class CollectObservedItemSkill
                 itemPosition.x() - playerPosition.x();
         final double deltaZ =
                 itemPosition.z() - playerPosition.z();
+        final double deltaY =
+                itemPosition.y() - playerPosition.y();
         return deltaX * deltaX + deltaZ * deltaZ
                     <= PICKUP_WAIT_HORIZONTAL_RADIUS
                         * PICKUP_WAIT_HORIZONTAL_RADIUS
-                && Math.abs(
-                    itemPosition.y() - playerPosition.y()
-                ) <= PICKUP_WAIT_VERTICAL_LIMIT;
+                && deltaY <= PICKUP_WAIT_UPWARD_LIMIT
+                && deltaY >= -PICKUP_WAIT_DOWNWARD_LIMIT;
     }
 
     private Resolution resolveInitial(

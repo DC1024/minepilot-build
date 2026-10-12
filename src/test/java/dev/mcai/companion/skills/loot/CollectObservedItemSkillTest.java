@@ -30,6 +30,32 @@ final class CollectObservedItemSkillTest {
         ));
     }
 
+    /*
+     * A stack below the body is a different story. Player.tick() inflates the
+     * pickup search box by only 0.5 vertically, so a drop two blocks under the
+     * feet can never be touched: the skill must walk toward it instead of
+     * standing still. The limit used to be a symmetric 2.25, which made the
+     * body wait forever for a pickup that could not happen (the stone stall).
+     */
+    @Test
+    void refusesToWaitForADropTheFeetCannotReach() {
+        final PerceptionVec3 player =
+                new PerceptionVec3(10.5, 64.0, 20.5);
+
+        assertFalse(CollectObservedItemSkill.withinPickupWaitRange(
+                player,
+                new PerceptionVec3(10.5, 62.0, 20.5)
+        ));
+        assertFalse(CollectObservedItemSkill.withinPickupWaitRange(
+                player,
+                new PerceptionVec3(10.5, 63.1, 20.5)
+        ));
+        assertTrue(CollectObservedItemSkill.withinPickupWaitRange(
+                player,
+                new PerceptionVec3(10.5, 63.5, 20.5)
+        ));
+    }
+
     @Test
     void acceptsOnlyANearbySameItemMergeSurvivor() {
         final PerceptionVec3 original =
