@@ -104,6 +104,62 @@ final class PrepareStoneToolsSkillTest {
         assertEquals(other, selected.orElseThrow());
     }
 
+    @Test
+    void resolvesTheBlockDirectlyUnderfootIncludingNegativeCoordinates() {
+        /*
+         * 线上实测位置 (7.906, 72.0, -21.13)：脚下方块应为 (7, 71, -22)。
+         * 负数坐标必须向下取整，否则往下一格会落在自己身上。
+         */
+        assertEquals(
+                new BlockCoordinate(7, 71, -22),
+                PrepareStoneToolsSkill.supportBlockAt(
+                        7.906,
+                        72.0,
+                        -21.13
+                )
+        );
+        assertEquals(
+                new BlockCoordinate(4, 62, 7),
+                PrepareStoneToolsSkill.supportBlockAt(4.0, 63.0, 7.0)
+        );
+    }
+
+    @Test
+    void bindsTheDescentTargetToTheExactObservedCoordinate() {
+        final VisibleBlockFace wanted = visibleStone(4, 62, 7, 1.2);
+        final VisibleBlockFace other = visibleStone(5, 62, 7, 1.4);
+
+        assertEquals(
+                wanted,
+                PrepareStoneToolsSkill.visibleFaceAt(
+                        List.of(other, wanted),
+                        new BlockCoordinate(4, 62, 7)
+                ).orElseThrow()
+        );
+    }
+
+    @Test
+    void refusesToMineABlockThatWasNeverObserved() {
+        assertTrue(PrepareStoneToolsSkill.visibleFaceAt(
+                List.of(visibleStone(4, 62, 7, 1.2)),
+                new BlockCoordinate(4, 68, 7)
+        ).isEmpty());
+    }
+
+    @Test
+    void prefersTheNearestObservedFaceOfTheDescentTarget() {
+        final VisibleBlockFace top = visibleStone(4, 62, 7, 1.2);
+        final VisibleBlockFace side = visibleStone(4, 62, 7, 3.4);
+
+        assertEquals(
+                top,
+                PrepareStoneToolsSkill.visibleFaceAt(
+                        List.of(side, top),
+                        new BlockCoordinate(4, 62, 7)
+                ).orElseThrow()
+        );
+    }
+
     private static VisibleBlockFace visibleStone(
             final int x,
             final int y,

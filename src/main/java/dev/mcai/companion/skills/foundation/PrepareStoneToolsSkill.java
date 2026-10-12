@@ -78,6 +78,24 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     private static final double RELIABLE_TABLE_INTERACTION_DISTANCE = 3.75;
     private static final double TABLE_APPROACH_RADIUS = 3.0;
     /*
+     * Live telemetry (FIX9) showed a full 360-degree scan of this world's
+     * surface reporting visibleFaces=14 with stoneFaces=0, and an offline
+     * read of the region file confirmed why: the stone layer begins about
+     * five blocks below the grass, underneath mushroom blocks, leaf litter,
+     * grass and dirt.  No heading can ever expose it to a first-person ray,
+     * so completing the search by scanning alone is impossible here while an
+     * ordinary player simply digs straight down until stone appears.  Every
+     * descent block is still only ever acted on after the companion has
+     * genuinely looked at it, and the descent is bounded so a body standing
+     * on bedrock or over a shaft stops with a diagnostic instead of digging
+     * forever.
+     */
+    private static final int MAXIMUM_DIG_DOWN_BLOCKS = 24;
+    private static final int MAXIMUM_DIG_AIM_TICKS = 40;
+    private static final float DIG_DOWN_PITCH = -90.0F;
+    private static final double DIG_SEED_CLUSTER_RADIUS = 1.0;
+    private static final String KEEP_CURRENT_HAND = "minecraft:air";
+    /*
      * Fair perception already clips every block ray to 24 blocks. The
      * cluster gatherer can legally walk toward a retained visible seed before
      * mining it, so imposing the old five-block interaction radius here made
@@ -124,6 +142,11 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
     private GatherVisibleBlockClusterParameters gatheringParameters;
     private MoveToSkill tableMovement;
     private MoveToParameters tableMovementParameters;
+    private boolean digGather;
+    private int digDownBlocks;
+    private long digAimStartedAtTick = -1;
+    private long digAimObservationRevision = -1L;
+    private boolean awaitingDigAim;
 
     /*
      * Diagnostics only -- surfaced through checkpoint() so a failed
@@ -267,6 +290,11 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         gatheringParameters = null;
         tableMovement = null;
         tableMovementParameters = null;
+        digGather = false;
+        digDownBlocks = 0;
+        digAimStartedAtTick = -1L;
+        digAimObservationRevision = -1L;
+        awaitingDigAim = false;
         beginScan(
                 context,
                 frame,
@@ -310,6 +338,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                         "{\"phase\":\"%s\",\"scanTurns\":%d,"
                                 + "\"elapsedTicks\":%d,"
                                 + "\"gathering\":%s,"
+                                + "\"digBlocks\":%d,"
                                 + "\"visibleFaces\":%d,"
                                 + "\"stoneFaces\":%d,"
                                 + "\"stoneFacesKept\":%d,"
@@ -318,6 +347,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                         scanTurns,
                         Math.max(0L, context.gameTick() - startedAtTick),
                         phase == Phase.GATHER_STONE,
+                        digDownBlocks,
                         diagnosticsVisibleFaces,
                         diagnosticsStoneFaces,
                         diagnosticsStoneFacesKept,
@@ -371,7 +401,8 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         }
         if (!frame.onGround()
                 && phase != Phase.GATHER_STONE
-                && phase != Phase.MOVE_TO_TABLE) {
+                && phase != Phase.MOVE_TO_TABLE
+                && phase != Phase.DIG_DOWN) {
             core.stop();
             return SkillTickResult.running(false, true);
         }
@@ -397,6 +428,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                     confirmCobblestone(context, frame);
             case FIND_TABLE -> findTable(context, frame);
             case MOVE_TO_TABLE -> moveToTable(context, frame);
+            case DIG_DOWN -> digDown(context, frame);
             case AIM_TABLE -> aimTable(context, frame);
             case OPEN_TABLE -> openTable(context);
             case CONFIRM_MENU -> confirmMenu(context);
@@ -450,11 +482,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         if (maybeInteraction.isPresent()) {
             final InteractionSkillFrame interaction =
                     maybeInteraction.orElseThrow();
-            final BlockCoordinate feet = new BlockCoordinate(
-                    (int) Math.floor(frame.position().x()),
-                    (int) Math.floor(frame.position().y()),
-                    (int) Math.floor(frame.position().z())
-            );
+            final BlockCoordinate feet = feetOf(frame);
             recordStoneSearchDiagnostics(
                     feet,
                     interaction.visibleBlockFaces()
@@ -508,6 +536,116 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         return scan(context, frame, Phase.FIND_STONE);
     }
 
+    /**
+     * Enters the straight-down fallback after a full heading sweep found no
+     * naturally exposed stone.
+     *
+     * <p>Nothing is mined here. This only arms the descent, and the next
+     * ticks turn the body's own view onto the block it is standing on so the
+     * face is a real first-person observation before any action is bound.</p>
+     */
+    private SkillTickResult beginDigDown(final SkillContext context) {
+        digAimStartedAtTick = context.gameTick();
+        digAimObservationRevision = -1L;
+        awaitingDigAim = false;
+        phase = Phase.DIG_DOWN;
+        phaseStartedAtTick = context.gameTick();
+        return SkillTickResult.running(true, true);
+    }
+
+    private SkillTickResult digDown(
+            final SkillContext context,
+            final CoreSkillFrame frame
+    ) {
+        if (ownedCount(frame, COBBLESTONE) >= REQUIRED_COBBLESTONE) {
+            beginScan(context, frame, Phase.FIND_TABLE);
+            return SkillTickResult.running(true, true);
+        }
+        if (digDownBlocks >= MAXIMUM_DIG_DOWN_BLOCKS) {
+            return fail(NAME + ".stone_not_reached");
+        }
+        final Optional<InteractionSkillFrame> maybeInteraction =
+                ownedInteractionFrame(frame);
+        if (maybeInteraction.isEmpty()) {
+            return SkillTickResult.running(false, true);
+        }
+        final InteractionSkillFrame interaction =
+                maybeInteraction.orElseThrow();
+        final BlockCoordinate support = supportBlockOf(frame);
+        final Optional<VisibleBlockFace> visibleSupport =
+                visibleFaceAt(
+                        interaction.visibleBlockFaces(),
+                        support
+                );
+        if (visibleSupport.isPresent()) {
+            return beginSupportDig(
+                    context,
+                    interaction,
+                    visibleSupport.orElseThrow()
+            );
+        }
+        if (awaitingDigAim
+                && frame.observationRevision()
+                    <= digAimObservationRevision) {
+            return SkillTickResult.running(false, true);
+        }
+        if (context.gameTick() - digAimStartedAtTick
+                >= MAXIMUM_DIG_AIM_TICKS) {
+            return fail(NAME + ".dig_target_not_visible");
+        }
+        if (!core.stop().accepted()
+                || !core.look(new LookIntent(
+                        yaw(frame.lookDirection()),
+                        DIG_DOWN_PITCH
+                )).accepted()) {
+            return fail(NAME + ".dig_aim_rejected");
+        }
+        digAimObservationRevision = frame.observationRevision();
+        awaitingDigAim = true;
+        return SkillTickResult.running(true, true);
+    }
+
+    /*
+     * One observation, one block. The seed carries the type the ray actually
+     * reported, so the descent never has to guess what the body is standing
+     * on, and keeping the current hand avoids a spurious tool swap for soil.
+     */
+    private SkillTickResult beginSupportDig(
+            final SkillContext context,
+            final InteractionSkillFrame interaction,
+            final VisibleBlockFace support
+    ) {
+        gatheringParameters = new GatherVisibleBlockClusterParameters(
+                interaction.dimension(),
+                new ObservedBlockTarget(
+                        interaction.observationRevision(),
+                        support.block().x(),
+                        support.block().y(),
+                        support.block().z(),
+                        BlockFace.valueOf(
+                                support.face().toUpperCase(Locale.ROOT)
+                        )
+                ),
+                support.blockTypeId(),
+                1,
+                DIG_SEED_CLUSTER_RADIUS,
+                KEEP_CURRENT_HAND
+        );
+        final Optional<SkillFailure> rejected = gatherer.preconditions(
+                context,
+                gatheringParameters
+        );
+        if (rejected.isPresent()) {
+            return fail(NAME + ".dig_block_rejected");
+        }
+        gatherer.start(context, gatheringParameters);
+        digGather = true;
+        digDownBlocks++;
+        phase = Phase.GATHER_STONE;
+        phaseStartedAtTick = context.gameTick();
+        return SkillTickResult.running(true, true);
+    }
+
     private SkillTickResult gatherStone(final SkillContext context) {
         if (gatheringParameters == null) {
             return fail(NAME + ".gather_binding_missing");
@@ -520,6 +658,16 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
             return fail(NAME + ".stone_gather_failed");
         }
         if (child.status() == SkillTickResult.Status.COMPLETED) {
+            if (digGather) {
+                /*
+                 * A descent block yields soil, not cobblestone, so it must
+                 * not enter the cobblestone confirmation window. Re-enter the
+                 * descent instead: it stops on its own once the ordinary
+                 * stone sweep or the cobblestone count is satisfied.
+                 */
+                digGather = false;
+                return beginDigDown(context);
+            }
             phase = Phase.CONFIRM_COBBLESTONE;
             phaseStartedAtTick = context.gameTick();
             return SkillTickResult.running(true, true);
@@ -804,9 +952,15 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
             final Phase scanningPhase
     ) {
         if (scanTurns >= MAXIMUM_SCAN_TURNS) {
-            return fail(scanningPhase == Phase.FIND_STONE
-                    ? NAME + ".visible_stone_not_found"
-                    : NAME + ".visible_table_not_found");
+            /*
+             * A completed heading sweep is the whole of what re-aiming can
+             * prove. Refusing to act past it is only honest when a target
+             * was found; otherwise the companion does what a player does and
+             * digs down instead of reporting that stone does not exist.
+             */
+            return scanningPhase == Phase.FIND_STONE
+                    ? beginDigDown(context)
+                    : fail(NAME + ".visible_table_not_found");
         }
         if (awaitingScanObservation
                 && frame.observationRevision()
@@ -973,6 +1127,58 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
                 && block.z() == feet.z();
     }
 
+    static BlockCoordinate feetOf(final CoreSkillFrame frame) {
+        Objects.requireNonNull(frame, "frame");
+        return new BlockCoordinate(
+                (int) Math.floor(frame.position().x()),
+                (int) Math.floor(frame.position().y()),
+                (int) Math.floor(frame.position().z())
+        );
+    }
+
+    /**
+     * The one block a body standing at this position rests on.
+     */
+    static BlockCoordinate supportBlockAt(
+            final double x,
+            final double y,
+            final double z
+    ) {
+        return new BlockCoordinate(
+                (int) Math.floor(x),
+                (int) Math.floor(y) - 1,
+                (int) Math.floor(z)
+        );
+    }
+
+    private static BlockCoordinate supportBlockOf(final CoreSkillFrame frame) {
+        Objects.requireNonNull(frame, "frame");
+        return supportBlockAt(
+                frame.position().x(),
+                frame.position().y(),
+                frame.position().z()
+        );
+    }
+
+    /**
+     * The nearest retained observation of an exact coordinate, so a descent
+     * block can only ever be bound to a face the companion really saw.
+     */
+    static Optional<VisibleBlockFace> visibleFaceAt(
+            final List<VisibleBlockFace> visibleBlockFaces,
+            final BlockCoordinate block
+    ) {
+        Objects.requireNonNull(visibleBlockFaces, "visibleBlockFaces");
+        Objects.requireNonNull(block, "block");
+        return visibleBlockFaces.stream()
+                .filter(face -> face.block().x() == block.x()
+                        && face.block().y() == block.y()
+                        && face.block().z() == block.z())
+                .min(Comparator.comparingDouble(
+                        VisibleBlockFace::distance
+                ));
+    }
+
     private void recordStoneSearchDiagnostics(
             final BlockCoordinate feet,
             final List<VisibleBlockFace> visibleBlockFaces
@@ -1108,6 +1314,7 @@ public final class PrepareStoneToolsSkill implements Skill<NoParameters> {
         IDLE,
         PREPARE_STICKS,
         FIND_STONE,
+        DIG_DOWN,
         GATHER_STONE,
         CONFIRM_COBBLESTONE,
         FIND_TABLE,
