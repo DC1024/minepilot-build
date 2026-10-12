@@ -3238,6 +3238,132 @@ final class MinecraftPlannerInputFactoryTest {
         };
     }
 
+    /*
+     * Prefix caching can only reuse the longest leading run of characters
+     * that is byte-identical to the previous request. TRUSTED_LOCAL_EXECUTION
+     * carries live skill progress, rejection codes and observation-request
+     * status, so it changes on essentially every planner call. If it sits
+     * anywhere near the top of the template it evicts the ~9.5 KiB static
+     * rule set from the cache on every request.
+     *
+     * These tests fail if a future edit moves that volatile block back up the
+     * template, or reintroduces another per-request value ahead of it.
+     */
+    @Test
+    void volatileLocalExecutionBlockIsEmittedAfterTheStaticRules() {
+        final var input = new MinecraftPlannerInputFactory(
+                new SkillRegistry().register(
+                        "survey_surroundings",
+                        noArgumentSkill()
+                ),
+                CompanionRuntime.coreSkillGuideForTests()
+        ).create(
+                "request-stable-prefix",
+                new GoalSnapshot(
+                        Optional.empty(),
+                        1L,
+                        GoalStatus.RUNNING,
+                        GoalSource.PLAYER_CHAT,
+                        "follow the player",
+                        "",
+                        java.time.Instant.EPOCH,
+                        false
+                ),
+                new BrainObservation(
+                        1L,
+                        new SkillContext(1L, 1L, 20L, false, true, 0.0),
+                        "{}",
+                        "{}"
+                )
+        );
+
+        final String prompt = input.systemPrompt();
+        final int volatileBlock = prompt.indexOf("TRUSTED_LOCAL_EXECUTION");
+        assertTrue(
+                volatileBlock >= 0,
+                "The trusted local execution block must still be present"
+        );
+        /*
+         * Every static rule sentence must precede the volatile block, so the
+         * reusable prefix survives between requests.
+         */
+        for (String rule : java.util.List.of(
+                "Preserve the one life in Hardcore",
+                "SAFE_IDLE decision permanently ends",
+                "lastModelDecisionFailureCode, when present",
+                "recalledVerifiedPortalEdgeData contains only directed portal"
+        )) {
+            final int ruleAt = prompt.indexOf(rule);
+            assertTrue(ruleAt >= 0, "Missing static rule: " + rule);
+            assertTrue(
+                    ruleAt < volatileBlock,
+                    "Static rule must precede TRUSTED_LOCAL_EXECUTION so the "
+                            + "cacheable prefix stays intact: " + rule
+            );
+        }
+        /*
+         * The volatile block must also come after the owner preference block,
+         * which only changes when an owner edits settings.
+         */
+        assertTrue(
+                prompt.indexOf("END_TRUSTED_OWNER_AGENT_PREFERENCES")
+                        < volatileBlock,
+                "Owner preferences are more stable than live execution state"
+        );
+    }
+
+    @Test
+    void volatileLocalExecutionBlockIsTheLastSectionOfTheTemplate() {
+        final var input = new MinecraftPlannerInputFactory(
+                new SkillRegistry(),
+                CompanionRuntime.coreSkillGuideForTests()
+        ).create(
+                "request-tail-order",
+                new GoalSnapshot(
+                        Optional.empty(),
+                        1L,
+                        GoalStatus.RUNNING,
+                        GoalSource.PLAYER_CHAT,
+                        "follow the player",
+                        "",
+                        java.time.Instant.EPOCH,
+                        false
+                ),
+                new BrainObservation(
+                        1L,
+                        new SkillContext(1L, 1L, 20L, false, true, 0.0),
+                        "{}",
+                        "{}"
+                )
+        );
+
+        final String prompt = input.systemPrompt();
+        final String volatileBlock = "TRUSTED_LOCAL_EXECUTION";
+        final int endMarker = prompt.indexOf("END_TRUSTED_LOCAL_EXECUTION");
+        assertTrue(endMarker >= 0, "The volatile block must be closed");
+        /*
+         * Nothing but whitespace may follow the volatile block, otherwise the
+         * trailing content would also be re-sent in full on every request.
+         */
+        final String tail = prompt.substring(
+                endMarker + "END_TRUSTED_LOCAL_EXECUTION".length()
+        );
+        assertTrue(
+                tail.isBlank(),
+                "The volatile block must be the final section; found trailing "
+                        + "content: " + tail.strip()
+        );
+        /*
+         * Guard the size win directly: the cacheable prefix must cover the
+         * bulk of the template rather than a rounding-error slice of it.
+         */
+        assertTrue(
+                prompt.indexOf(volatileBlock)
+                        > prompt.length() / 2,
+                "At least half of the system prompt must be a reusable prefix"
+        );
+    }
+
     private enum Unit {
         INSTANCE
     }

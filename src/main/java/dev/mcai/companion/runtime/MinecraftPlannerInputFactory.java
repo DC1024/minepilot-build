@@ -350,6 +350,23 @@ public final class MinecraftPlannerInputFactory implements PlannerInputFactory {
             "agentSettings result"
         );
         final String agentPreferenceBlock = preferences.asTrustedPromptBlock();
+        /*
+         * Stable-prefix ordering. Prefix caching (and any provider-side
+         * prompt cache) can only reuse the longest leading run of characters
+         * that is byte-identical to the previous request. This template is
+         * ~10 KiB (9,528 of its 10,294 characters are static rule text), yet
+         * all nine of its dynamic values used to sit within the first 764
+         * characters. A single volatile value near the top therefore evicted
+         * the entire static rule set from the cache on every request.
+         *
+         * TRUSTED_LOCAL_EXECUTION is the most volatile field here: it carries
+         * live skill progress, rejection codes and observation-request status
+         * that change on essentially every planner call. It is therefore
+         * emitted last, after every static rule and after the more stable
+         * catalogue and preference blocks, so the reusable prefix grows from
+         * ~542 to ~10,252 characters. Keep new volatile values at the end of
+         * this template rather than near the top.
+         */
         final String prompt = """
             You control one visible Minecraft Java survival player through a
             small allow-list of deterministic local skills. Plan at player
@@ -360,10 +377,6 @@ public final class MinecraftPlannerInputFactory implements PlannerInputFactory {
             TRUSTED_ACTIVE_GOAL
             %s
             END_TRUSTED_ACTIVE_GOAL
-
-            TRUSTED_LOCAL_EXECUTION
-            %s
-            END_TRUSTED_LOCAL_EXECUTION
 
             Available local skill names: [%s]
             %s
@@ -511,16 +524,20 @@ public final class MinecraftPlannerInputFactory implements PlannerInputFactory {
             one. lastObservationRequest in trusted local execution reports
             ACCEPTED, UNSUPPORTED, or REJECTED without echoing model-authored
             request text.
+
+            TRUSTED_LOCAL_EXECUTION
+            %s
+            END_TRUSTED_LOCAL_EXECUTION
             """.formatted(
                 goal.goal(),
-                observation.trustedRuntimeJson(),
                 names,
                 currentSkillGuide,
                 localSkillUsageGuidance(availableSkillNames),
                 evaluationRule,
                 currentRoutePlaybook,
                 currentCropTargets,
-                agentPreferenceBlock
+                agentPreferenceBlock,
+                observation.trustedRuntimeJson()
             );
         if (prompt.length() > MAX_SYSTEM_PROMPT_CHARACTERS) {
             throw new IllegalArgumentException("Planner system prompt exceeds its bound");
