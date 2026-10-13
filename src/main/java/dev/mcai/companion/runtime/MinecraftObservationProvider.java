@@ -52,6 +52,14 @@ import net.minecraft.server.level.ServerPlayer;
  */
 public final class MinecraftObservationProvider implements ObservationProvider {
     public static final int DEFAULT_SEMANTIC_INTERVAL_TICKS = 5;
+    /**
+     * Absolute freshness safety net for an idle companion. Once the semantic
+     * observation is this many ticks old we resample regardless of whether the
+     * cheap inventory/menu change check noticed anything, so a change the
+     * lightweight signature missed can never leave the model working from a
+     * arbitrarily stale world. 80 ticks = 4 seconds.
+     */
+    private static final int MAX_STALENESS_TICKS = 80;
     private static final Gson GSON = new GsonBuilder()
         .disableHtmlEscaping()
         .create();
@@ -641,7 +649,19 @@ public final class MinecraftObservationProvider implements ObservationProvider {
         if (latestFingerprint.criticalBodyChanged(player)) {
             return true;
         }
-        return gameTick - lastSemanticGameTick >= semanticIntervalTicks;
+        /*
+         * Past the coarse body checks, only resample on a real change. A still
+         * companion whose inventory and menu have not moved is re-examined at
+         * the absolute safety cap below instead of on the fixed 4 Hz floor, so
+         * the ~60 KB semantic JSON is no longer rebuilt on a constant cadence
+         * while idle. This is the event-driven half of C2: the model wakeup was
+         * already event-gated (AutonomyWakeup); this stops the perception layer
+         * from polling when nothing happened.
+         */
+        if (latestFingerprint.relevantDynamicChanged(player)) {
+            return gameTick - lastSemanticGameTick >= semanticIntervalTicks;
+        }
+        return gameTick - lastSemanticGameTick >= MAX_STALENESS_TICKS;
     }
 
     private static boolean isActive(final SkillSupervisor.Snapshot snapshot) {
@@ -942,7 +962,21 @@ public final class MinecraftObservationProvider implements ObservationProvider {
         List<String> inventory,
         List<String> openMenu,
         List<String> dangers,
-        String routePhase
+        String routePhase,
+        /**
+         * Whether a non-inventory menu (chest, furnace, …) was open when this
+         * fingerprint was taken. Cheap to compare; lets a menu open/close
+         * invalidate the high-level observation without a full resample.
+         */
+        boolean menuOpen,
+        /**
+         * Cheap rolling hash of the live inventory contents. Built without
+         * allocating strings (unlike {@code inventory}), so it can be compared
+         * every tick to decide whether an idle companion's world actually
+         * changed. A hopper deposit or a smelted item shifts it; an unchanged
+         * pocket leaves it stable.
+         */
+        int inventorySignature
     ) {
         Fingerprint {
             Objects.requireNonNull(dimension, "dimension");
@@ -954,6 +988,14 @@ public final class MinecraftObservationProvider implements ObservationProvider {
 
         static Fingerprint from(final SemanticObservation observation) {
             final var body = observation.body();
+            final List<String> inventory = body.inventory().stream()
+                .map(item -> item.itemId() + "=" + item.count())
+                .toList();
+            int inventorySignature = 0;
+            for (final String entry : inventory) {
+                inventorySignature = 31 * inventorySignature + entry.hashCode();
+            }
+            final boolean menuOpen = observation.openMenu().isPresent();
             return new Fingerprint(
                 body.dimensionId(),
                 coarseCoordinate(body.position().x()),
@@ -964,9 +1006,7 @@ public final class MinecraftObservationProvider implements ObservationProvider {
                 Math.max(0, Math.min(4, 4 * body.airSupply() / body.maxAirSupply())),
                 body.onFire(),
                 body.inWater(),
-                body.inventory().stream()
-                    .map(item -> item.itemId() + "=" + item.count())
-                    .toList(),
+                inventory,
                 observation.openMenu()
                     .map(menu -> java.util.stream.Stream.concat(
                         java.util.stream.Stream.of(
@@ -1003,7 +1043,9 @@ public final class MinecraftObservationProvider implements ObservationProvider {
                     .map(danger -> danger.kind().name())
                     .sorted()
                     .toList(),
-                ""
+                "",
+                menuOpen,
+                inventorySignature
             );
         }
 
@@ -1021,7 +1063,9 @@ public final class MinecraftObservationProvider implements ObservationProvider {
                 inventory,
                 openMenu,
                 dangers,
-                Objects.requireNonNull(phase, "phase")
+                Objects.requireNonNull(phase, "phase"),
+                menuOpen,
+                inventorySignature
             );
         }
 
@@ -1039,7 +1083,9 @@ public final class MinecraftObservationProvider implements ObservationProvider {
                 inventory,
                 openMenu,
                 dangers,
-                routePhase
+                routePhase,
+                isMenuOpen(player),
+                liveInventorySignature(player)
             );
         }
 
@@ -1070,6 +1116,42 @@ public final class MinecraftObservationProvider implements ObservationProvider {
                 || airBand != airBand(player)
                 || onFire != player.isOnFire()
                 || inWater != player.isInWater();
+        }
+
+        /**
+         * Whether anything the model cares about, beyond the coarse body
+         * fields already checked by {@link #criticalBodyChanged}, has changed
+         * since this fingerprint was taken. Cheap by design: it compares a
+         * boolean menu flag and a rolling inventory hash, never rebuilding the
+         * immutable inventory/menu/danger lists.
+         *
+         * <p>Used to decide whether an idle companion's 4 Hz semantic resample
+         * is worth running. When this returns false the world has not materially
+         * changed and the resample is skipped, so a still companion stops
+         * rebuilding its ~60 KB observation on a fixed cadence.</p>
+         */
+        boolean relevantDynamicChanged(final ServerPlayer player) {
+            if (isMenuOpen(player) != menuOpen) {
+                return true;
+            }
+            return liveInventorySignature(player) != inventorySignature;
+        }
+
+        private static boolean isMenuOpen(final ServerPlayer player) {
+            final var menu = player.containerMenu;
+            return menu != null && menu != player.inventoryMenu;
+        }
+
+        private static int liveInventorySignature(final ServerPlayer player) {
+            int signature = 0;
+            for (final ItemStack stack : player.getInventory().items) {
+                if (!stack.isEmpty()) {
+                    signature = 31 * signature
+                        + System.identityHashCode(stack.getItem())
+                        + stack.getCount();
+                }
+            }
+            return signature;
         }
 
         private static int airBand(final ServerPlayer player) {
