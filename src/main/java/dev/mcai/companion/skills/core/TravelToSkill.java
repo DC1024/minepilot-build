@@ -838,7 +838,10 @@ public final class TravelToSkill implements Skill<TravelToParameters> {
             String code = result.failure().orElseThrow().code();
             if (code.contains("hardcore")
                     || code.contains("danger")
-                    || code.contains("stuck")
+                    // move_to.stuck (道路不通) 应落到下方换前沿重试分支；
+                    // 仅 move_to.turn_stuck (视界/视线问题) 保持终局，
+                    // 与 PrepareIronToolkitSkill.recoverableFixtureMovementFailure 约定一致。
+                    || code.equals("move_to.turn_stuck")
                     || code.contains("stale")
                     || code.contains("player_mismatch")
                     || code.contains("dimension_mismatch")) {
