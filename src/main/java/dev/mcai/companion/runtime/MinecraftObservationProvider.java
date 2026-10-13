@@ -523,7 +523,17 @@ public final class MinecraftObservationProvider implements ObservationProvider {
         if (mustRefreshSemantic(player, gameTick, goalChanged)) {
             latest = sampler.sample(player);
             latestJson = jsonCodec.encode(latest);
-            latestFingerprint = Fingerprint.from(latest);
+            /*
+             * Build the fingerprint from the freshly sampled observation, then
+             * stamp the live player-derived cheap signals (menuOpen and the
+             * rolling inventory signature) from the very same ServerPlayer.
+             * This keeps the stored inventorySignature on the SAME formula that
+             * relevantDynamicChanged() recomputes every tick, so an unchanged
+             * idle inventory compares equal and the 4 Hz resample is actually
+             * skipped; otherwise the two formulas never matched and the
+             * optimisation never engaged.
+             */
+            latestFingerprint = Fingerprint.from(latest).withCurrentBody(player);
             navigationMapper.ingest(latest);
             semanticObserver.accept(latest);
             lastSemanticGameTick = gameTick;
@@ -1144,7 +1154,17 @@ public final class MinecraftObservationProvider implements ObservationProvider {
 
         private static int liveInventorySignature(final ServerPlayer player) {
             int signature = 0;
-            for (final ItemStack stack : player.getInventory().items) {
+            final var inventory = player.getInventory();
+            /*
+             * Walk every slot (main, hotbar, armor, offhand) through the public
+             * getItem(int) accessor. The raw `items` field is private, and this
+             * also keeps the signature in lock-step with summarizeInventory(),
+             * which samples the full 41-slot inventory. identityHashCode of the
+             * registry singleton Item is stable across ticks, so no string
+             * allocation is needed and an unchanged pocket hashes identically.
+             */
+            for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+                final ItemStack stack = inventory.getItem(slot);
                 if (!stack.isEmpty()) {
                     signature = 31 * signature
                         + System.identityHashCode(stack.getItem())
