@@ -45,6 +45,7 @@ import java.util.function.LongFunction;
 import java.util.function.Function;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.ItemStack;
 
 /**
  * Server-thread observation bridge: body safety is refreshed at 20 TPS while
