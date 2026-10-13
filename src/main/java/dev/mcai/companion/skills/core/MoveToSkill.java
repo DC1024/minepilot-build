@@ -45,7 +45,7 @@ import java.util.UUID;
  * from fair first-person observations and executes one revalidated step at a
  * time.
  */
-public final class MoveToSkill implements Skill<MoveToParameters> {
+public class MoveToSkill implements Skill<MoveToParameters> {
     private static final double DANGER_EPSILON = 1.0E-9;
     private static final int MAXIMUM_DOOR_ADVANCE_TICKS = 20;
     private static final int STUCK_WINDOW_TICKS = 20;
