@@ -657,9 +657,6 @@ public final class MinecraftObservationProvider implements ObservationProvider {
             semanticRefreshRequested = false;
             return true;
         }
-        if (latestFingerprint.criticalBodyChanged(player)) {
-            return true;
-        }
         /*
          * Past the coarse body checks, only resample on a real change. A still
          * companion whose inventory and menu have not moved is re-examined at
@@ -667,12 +664,68 @@ public final class MinecraftObservationProvider implements ObservationProvider {
          * the ~60 KB semantic JSON is no longer rebuilt on a constant cadence
          * while idle. This is the event-driven half of C2: the model wakeup was
          * already event-gated (AutonomyWakeup); this stops the perception layer
-         * from polling when nothing happened.
+         * from polling when nothing happened. The tail decision is delegated to
+         * decideSemanticRefresh so it can be exercised by a plain JUnit test
+         * without a Minecraft server (see
+         * MinecraftObservationProviderC2PrimeDecisionTest).
          */
-        if (latestFingerprint.relevantDynamicChanged(player)) {
-            return gameTick - lastSemanticGameTick >= semanticIntervalTicks;
+        return decideSemanticRefresh(
+            latestFingerprint.criticalBodyChanged(player),
+            latestFingerprint.relevantDynamicChanged(player),
+            gameTick - lastSemanticGameTick,
+            semanticIntervalTicks,
+            MAX_STALENESS_TICKS
+        );
+    }
+
+    /**
+     * Pure idle-skip decision extracted from {@link #mustRefreshSemantic}. Given
+     * the already-computed coarse body and cheap dynamic signals, decide whether
+     * the ~60 KB semantic observation must be rebuilt this tick.
+     *
+     * <p>This is the behavioural core of C2': when neither the coarse body nor
+     * the cheap inventory/menu signature changed, a still companion's 4 Hz
+     * resample is skipped and only the absolute {@code maxStalenessTicks} safety
+     * cap (4 s) can force a rebuild. Package-private and static so the decision
+     * can be exercised by a JUnit test that has no ServerPlayer.</p>
+     *
+     * @param criticalBodyChanged coarse body invalidator (dimension/coords/health/…)
+     * @param relevantDynamicChanged menu-open or inventory-signature drift
+     * @param ticksSinceLastSemantic ticks elapsed since the last rebuild
+     * @param semanticIntervalTicks the 4 Hz floor applied once a real change is seen
+     * @param maxStalenessTicks absolute safety cap before a forced rebuild
+     */
+    static boolean decideSemanticRefresh(
+        final boolean criticalBodyChanged,
+        final boolean relevantDynamicChanged,
+        final long ticksSinceLastSemantic,
+        final int semanticIntervalTicks,
+        final int maxStalenessTicks
+    ) {
+        if (criticalBodyChanged) {
+            return true;
         }
-        return gameTick - lastSemanticGameTick >= MAX_STALENESS_TICKS;
+        if (relevantDynamicChanged) {
+            return ticksSinceLastSemantic >= semanticIntervalTicks;
+        }
+        return ticksSinceLastSemantic >= maxStalenessTicks;
+    }
+
+    /**
+     * Pure comparison behind the per-tick inventory/menu check: did the cheap
+     * dynamic signals drift since the fingerprint was taken? Extracted from
+     * {@link Fingerprint#relevantDynamicChanged(ServerPlayer)} so it can be
+     * unit-tested without a ServerPlayer — see
+     * MinecraftObservationProviderC2PrimeDecisionTest.
+     */
+    static boolean dynamicSignalsChanged(
+        final boolean storedMenuOpen,
+        final int storedInventorySignature,
+        final boolean liveMenuOpen,
+        final int liveInventorySignature
+    ) {
+        return liveMenuOpen != storedMenuOpen
+            || liveInventorySignature != storedInventorySignature;
     }
 
     private static boolean isActive(final SkillSupervisor.Snapshot snapshot) {
@@ -1142,10 +1195,12 @@ public final class MinecraftObservationProvider implements ObservationProvider {
          * rebuilding its ~60 KB observation on a fixed cadence.</p>
          */
         boolean relevantDynamicChanged(final ServerPlayer player) {
-            if (isMenuOpen(player) != menuOpen) {
-                return true;
-            }
-            return liveInventorySignature(player) != inventorySignature;
+            return MinecraftObservationProvider.dynamicSignalsChanged(
+                menuOpen,
+                inventorySignature,
+                isMenuOpen(player),
+                liveInventorySignature(player)
+            );
         }
 
         private static boolean isMenuOpen(final ServerPlayer player) {
