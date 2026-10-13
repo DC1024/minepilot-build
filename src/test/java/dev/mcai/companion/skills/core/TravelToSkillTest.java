@@ -26,6 +26,8 @@ import dev.mcai.companion.waypoint.DimensionRef;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.lang.reflect.Field;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
@@ -530,6 +532,76 @@ final class TravelToSkillTest {
                 result.failure().orElseThrow().code()
         );
         assertTrue(actuator.stops > 0);
+    }
+
+    @Test
+    void segmentMoveToStuckIsRetriedRatherThanTerminal()
+            throws Exception {
+        AtomicLong generation = new AtomicLong(4);
+        CoreSkillTestFixtures.MutableFrames frames =
+                new CoreSkillTestFixtures.MutableFrames(
+                        frame(
+                                1,
+                                0.5,
+                                1.0,
+                                0.5,
+                                EAST,
+                                corridor(1, 4),
+                                0.0
+                        )
+                );
+        CoreSkillTestFixtures.RecordingActuator actuator =
+                new CoreSkillTestFixtures.RecordingActuator();
+        TravelToSkill skill = skill(
+                actuator,
+                frames,
+                generation,
+                policy(8, 64, 10)
+        );
+        TravelToParameters target = target(20.5, 0.5);
+
+        // Reach a state with an active, real segment so the next tick enters
+        // tickSegment, then swap that segment for a stub that fails with
+        // "move_to.stuck" — the exact code C3b must reroute through the
+        // frontier-retry path instead of aborting the whole journey.
+        skill.start(context(1, false), target);
+        skill.tick(context(2, false), target);
+
+        MoveToSkill stub = new MoveToSkill(PLAYER_ID, actuator, frames) {
+            @Override
+            public SkillTickResult tick(SkillContext ctx, MoveToParameters params) {
+                return SkillTickResult.failed("move_to.stuck");
+            }
+        };
+        Field segmentField = TravelToSkill.class.getDeclaredField("segment");
+        segmentField.setAccessible(true);
+        segmentField.set(skill, stub);
+
+        SkillTickResult result = skill.tick(context(3, false), target);
+
+        // Regression guard: before C3b the branch matched code.contains("stuck")
+        // and produced a terminal "travel_to.segment_stuck" failure. After C3b
+        // a segment's move_to.stuck must be retried, never terminal.
+        assertFalse(
+                result.status() == SkillTickResult.Status.FAILED
+                        && result.failure()
+                                .orElseThrow()
+                                .code()
+                                .equals("travel_to.segment_stuck"),
+                "a segment failing with move_to.stuck must be retried, not "
+                        + "treated as a terminal travel_to.segment_stuck failure"
+        );
+
+        // Positive proof the retry path ran: only the retry branch calls
+        // rememberRejectedFrontier, so the rejected-frontier set is non-empty.
+        Field frontiersField =
+                TravelToSkill.class.getDeclaredField("rejectedFrontiers");
+        frontiersField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<GridPos> frontiers =
+                (Set<GridPos>) frontiersField.get(skill);
+        assertFalse(frontiers.isEmpty(),
+                "the move_to.stuck retry should have remembered a rejected frontier");
     }
 
     @Test
